@@ -19,8 +19,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare-release:
+    name: Prepare GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure prerelease exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Beacon $RELEASE_TAG" \
+              --prerelease \
+              --notes "Native beacon-agent assets for $RELEASE_TAG."
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: prepare-release
     runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
@@ -77,28 +95,12 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary }}" dist/package/beacon-agent.exe
           Compress-Archive -Path dist/package/beacon-agent.exe -DestinationPath "dist/beacon-agent-$env:RELEASE_TAG-${{ matrix.suffix }}"
 
-      - name: Upload packaged agent
-        uses: actions/upload-artifact@v4
-        with:
-          name: beacon-agent-${{ env.RELEASE_TAG }}-${{ matrix.suffix }}
-          path: dist/beacon-agent-${{ env.RELEASE_TAG }}-${{ matrix.suffix }}
-          if-no-files-found: error
-          retention-days: 7
-
-  publish:
-    name: Publish agent assets
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download packaged agents
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Publish assets to GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: dist/*
-          fail_on_unmatched_files: true
+      - name: Publish packaged agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "dist/beacon-agent-${RELEASE_TAG}-${{ matrix.suffix }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
