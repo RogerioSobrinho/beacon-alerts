@@ -12,8 +12,8 @@ operational constraints.
 - Keep the server reachable only from approved agent hosts.
 - Store the SQLite database and channel secrets outside the repository.
 - Validate the policy file before starting the server; keep it free of secrets.
-- Validate Telegram config before enabling the one-shot `notify` worker; keep
-  the token file separately protected and root-owned.
+- Validate Telegram config before enabling the in-process notification worker;
+  keep the token file separately protected and root-owned.
 - Store each agent transport token as a separate root-owned file in the server
   credentials directory with restrictive permissions; do not pass tokens on the
   command line.

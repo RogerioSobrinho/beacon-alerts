@@ -1,0 +1,241 @@
+# Configuration Guide
+
+This guide configures a Beacon server in Docker and a native agent on a
+producer host. It does not create TLS certificates, Telegram credentials, or
+firewall rules. Those belong to the deployment environment.
+
+## Roles
+
+The recommended layout is:
+
+```text
+Ops host:
+  beacon server container
+  SQLite event and notification state
+  policy and agent credentials
+  Telegram worker
+
+Producer host:
+  beacon agent native systemd service
+  local event spool
+  one token matching one file on the server
+```
+
+The server and its notification worker must share one process/data directory.
+Do not run `beacon notify` in a second container against the same SQLite
+directory while `beacon server` is running.
+
+## Requirements
+
+Server host:
+
+- Docker Engine and Docker Compose v2;
+- outbound HTTPS to Telegram when Telegram delivery is enabled;
+- a writable data directory;
+- a restricted directory for agent token files;
+- a policy file and Telegram configuration file;
+- inbound access to TCP `8787` only from approved agents;
+- TLS certificate/key and CA files if HTTPS is used.
+
+Agent host:
+
+- a native `beacon` binary;
+- systemd, if using the example service;
+- a writable spool directory;
+- a token file readable only by the agent service;
+- network access to the server address.
+
+The current release publishes the server image to GHCR. Native agent binaries
+are not published as release assets yet; build the same tagged source release
+with `cargo build --release --locked` or package the binary through your own
+trusted build pipeline.
+
+## Server Layout
+
+The Compose file expects these host paths:
+
+```text
+/opt/beacon/
+  compose.yaml
+  .env
+
+/var/lib/beacon/events/
+  beacon.sqlite3 and SQLite sidecar files
+
+/etc/beacon/
+  policy.json
+  telegram.json
+  telegram.token
+  agents.d/
+    media.token
+    backup.token
+```
+
+The files under `agents.d` contain only bearer tokens. The filename is an
+operator label and is not sent to agents or included in events.
+
+Create directories before running Compose. The data directory must be writable
+by the container UID/GID `10001`; the configuration files must be readable by
+that same container user. Use your operating system's approved privileged
+procedure to apply ownership and permissions.
+
+Example layout commands, without secret values:
+
+```sh
+install -d -m 0750 /opt/beacon
+install -d -o 10001 -g 10001 -m 0750 /var/lib/beacon/events
+install -d -o root -g 10001 -m 0750 /etc/beacon/agents.d
+install -d -o root -g 10001 -m 0750 /etc/beacon
+```
+
+Do not put `.env`, token files, Telegram configuration, or certificates in the
+Git checkout.
+
+## Image Reference
+
+Set `/opt/beacon/.env` to an immutable digest selected for the deployment:
+
+```dotenv
+BEACON_IMAGE_REF=ghcr.io/rogeriosobrinho/beacon-alerts@sha256:341aa4964c77ea86cd11c5cc31f203df1445c3a1144981411719ff89d0ff7f42
+```
+
+The example digest is the published `v0.1.0-rc2` image. Replace it only after
+reviewing a later release. Do not use `latest`.
+
+## Policy File
+
+Copy `docs/policy.example.json` to `/etc/beacon/policy.json` and edit the
+matching fields. A rule can match `event_type`, `source`, `host_id`, `state`,
+and `severity`, and routes to one or more channel names.
+
+For Telegram, the channel name must be `telegram`:
+
+```json
+{
+  "rules": [
+    {
+      "name": "media-test",
+      "enabled": true,
+      "event_type": "beacon.test",
+      "source": "manual",
+      "host_id": "media",
+      "state": "firing",
+      "severity": "warning",
+      "channels": ["telegram"]
+    }
+  ]
+}
+```
+
+Start with a narrow test rule. Do not route all events until the pilot is
+validated.
+
+## Telegram Files
+
+Create `/etc/beacon/telegram.json` from `docs/telegram.example.json` and set a
+chat ID. Its `token_file` path is interpreted inside the container and must be
+`/etc/beacon/telegram.token` for the supplied Compose file.
+
+Put the bot token only in `/etc/beacon/telegram.token`. Generate or provision
+it through your secret manager without printing it in a terminal transcript.
+The token file must be readable by the container service user but must not be
+world-readable. The token is never placed in `.env`, policy, Compose, or an
+agent host.
+
+The server enables the in-process worker when `--telegram-config` is present.
+The Compose file already supplies this flag. Without it, events and jobs are
+still persisted but no Telegram delivery occurs.
+
+## Agent Token
+
+Generate one random token per agent on the server host. Write it to a new file
+under `/etc/beacon/agents.d`, then transfer the same value to the producer
+host's `/etc/beacon/agent.token` using the operator's approved secret-transfer
+method. Do not paste the value into chat, shell history, or a Git repository.
+
+The server rereads the credentials directory on every request. To rotate a
+token, replace the file atomically; to revoke it, remove the file. The agent
+must then be updated with the new token file before its next delivery.
+
+## Start Server
+
+From `/opt/beacon`:
+
+```sh
+docker compose --env-file .env config --quiet
+docker compose --env-file .env pull
+docker compose --env-file .env up -d
+docker compose --env-file .env ps
+```
+
+The current homelab has no TLS, so its pilot Compose uses `--allow-http`. For
+other environments, remove that flag and provide `--tls-cert` and `--tls-key`.
+Never expose the HTTP pilot endpoint outside the approved internal network.
+
+## Native Agent
+
+Build or install the reviewed Beacon binary on the producer host, then create:
+
+```text
+/etc/beacon/agent.token       mode 0600, agent-readable
+/var/lib/beacon/spool/        mode 0750, agent-writable
+```
+
+The agent command for the current no-TLS pilot is:
+
+```sh
+beacon agent \
+  --server http://192.168.68.62:8787 \
+  --allow-http \
+  --spool /var/lib/beacon/spool \
+  --token-file /etc/beacon/agent.token
+```
+
+For TLS, use an `https://` URL and add `--ca-file /etc/beacon/tls/ca.crt`; do
+not use `--allow-http`.
+
+The agent only drains events already in its spool. A detector or script creates
+events with `beacon send`, for example:
+
+```sh
+beacon send \
+  --event-type beacon.test \
+  --source manual \
+  --host media \
+  --state firing \
+  --severity warning \
+  --fingerprint beacon/test/media \
+  --facts '{"message":"pilot firing"}' \
+  --spool /var/lib/beacon/spool
+```
+
+Then run the agent once for a controlled test, or use the systemd unit in
+`docs/systemd.md` for continuous draining.
+
+## Validation Checklist
+
+- `docker compose config --quiet` succeeds;
+- the server container runs as UID `10001`;
+- TCP `8787` is reachable only from approved producer hosts;
+- the agent token is accepted and the spool event is removed after ACK;
+- the event and alert appear in SQLite;
+- one Telegram message arrives for `firing`;
+- a matching `resolved` event produces one recovery message;
+- repeating an event ID is idempotent;
+- stopping the server leaves the agent spool intact;
+- restarting the server drains pending notifications without duplication;
+- Beacon logs appear in journald and are forwarded by `journal-upload`;
+- no token appears in logs, event facts, policy, Compose, or Git.
+
+## Removal And Rollback
+
+Stop the Compose project before changing the image or data directory:
+
+```sh
+docker compose --env-file .env down
+```
+
+Keep `/var/lib/beacon/events` for rollback and backup. Do not delete it as part
+of a routine uninstall. Restore a previous image digest, run `config --quiet`,
+and start the project again. Keep the agent binary and token until the server
+rollback has been validated.

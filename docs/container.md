@@ -11,6 +11,8 @@ GHCR. It does not publish `latest`. The Compose file consumes the full image
 reference through `BEACON_IMAGE_REF`; production should set this to the
 resulting image digest, not a moving tag.
 
+The complete user configuration procedure is in `docs/configuration.md`.
+
 ## Ops Compose
 
 `compose.yaml` is intended for the Ops VM after its paths, firewall, and service

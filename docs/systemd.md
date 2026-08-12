@@ -34,11 +34,12 @@ ReadOnlyPaths=/etc/beacon/agent.token
 WantedBy=multi-user.target
 ```
 
-## Notify
+## Notification Worker
 
-Run `beacon notify` as a separate one-shot service or timer. It needs read/write
-access to the same SQLite directory and read access to the Telegram config and
-token file. Do not put the Telegram token in the unit or command line.
+For the container deployment, the notification worker runs inside the server
+process when `--telegram-config` is supplied. Do not run a second `beacon notify`
+process against the same SQLite directory. The standalone `notify` command is
+available for controlled one-shot operation when the server is stopped.
 
 ## Certificate Lifecycle
 

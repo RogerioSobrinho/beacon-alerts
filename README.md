@@ -17,12 +17,11 @@ detectors / automations -> beacon agent -> beacon server -> notification channel
 
 ## Status
 
-This repository is an early bootstrap. The CLI shape and event contract are
-provisional. The current stage implements authenticated HTTP intake, atomic
-server-side event persistence, local spooling, and one-shot agent delivery.
-Basic alert lifecycle state, policy routing, and a durable notification queue
-are now implemented, including a one-shot Telegram delivery worker. It does
-not run automatically.
+This repository contains an MVP release candidate. It implements authenticated
+HTTP intake, atomic server-side event persistence, local spooling, alert
+lifecycle state, policy routing, a durable notification queue, and a Telegram
+worker. The server and native agent still require environment-specific
+configuration before deployment.
 
 ## Bootstrap
 
@@ -39,6 +38,36 @@ beacon notify
 The current `send` command renders and durably queues a normalized event in an
 atomic local JSON spool. `agent` drains that spool to the authenticated server
 and removes an event only after a successful server response.
+
+For a complete configuration walkthrough, including directories, permissions,
+tokens, policy, Telegram, Docker Compose, and native agents, see the
+[Configuration Guide](docs/configuration.md).
+
+### Quick Start
+
+The server container and each native agent need separate configuration. The
+server stores its SQLite state in `/var/lib/beacon/events`; agent credentials
+are files under `/etc/beacon/agents.d`; policy and Telegram configuration live
+under `/etc/beacon`. Never commit these paths' secrets.
+
+```sh
+cp .env.example /opt/beacon/.env
+# Edit BEACON_IMAGE_REF to the reviewed image digest.
+docker compose --env-file /opt/beacon/.env config --quiet
+docker compose --env-file /opt/beacon/.env pull
+docker compose --env-file /opt/beacon/.env up -d
+```
+
+On a producer host, configure the native agent with a matching token file:
+
+```sh
+beacon agent --server http://server.example:8787 --allow-http \
+  --spool /var/lib/beacon/spool --token-file /etc/beacon/agent.token
+```
+
+For the complete directory layout, permissions, policy, Telegram files,
+systemd unit, validation and rollback procedure, read
+`docs/configuration.md` before starting a deployment.
 
 ```text
 beacon server --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events \
@@ -92,6 +121,7 @@ intended only for local development.
 - [Operations](docs/operations.md)
 - [Systemd and TLS](docs/systemd.md)
 - [Container deployment](docs/container.md)
+- [Configuration guide](docs/configuration.md)
 
 ## License
 
