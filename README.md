@@ -9,9 +9,10 @@ server owns alert state, deduplication, policy, templates, and notification
 delivery. Telegram is the first planned channel.
 
 ```text
-local detectors -> beacon agent -> beacon server -> notification channels
-                                      |
-                                      +-> VictoriaLogs (optional history)
+detectors / automations -> beacon agent -> beacon server -> notification channels
+       |                         |                 |
+       |                         |                 +-> journal -> journal-upload -> VictoriaLogs
+       +-> query VictoriaLogs (optional detector input)
 ```
 
 ## Status
@@ -40,16 +41,16 @@ atomic local JSON spool. `agent` drains that spool to the authenticated server
 and removes an event only after a successful server response.
 
 ```text
-beacon server --token-file /path/to/server.token --data /var/lib/beacon/events
+beacon server --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events
 beacon agent --token-file /path/to/agent.token --spool /var/lib/beacon/spool
 beacon server --policy-file /etc/beacon/policy.json
 beacon notify --data /var/lib/beacon/events --telegram-config /etc/beacon/telegram.json
 ```
 
-The transport bootstrap uses one bearer token per running server. This is not
-the final production credential model: per-agent credentials, rotation, TLS,
-and authorization scopes are required before deployment outside a controlled
-trusted network.
+The server accepts one bearer token file per agent in `--credentials-dir`.
+Adding, replacing, or removing a file rotates or revokes that agent without a
+server restart. TLS and authorization scopes remain required before deployment
+outside a controlled trusted network.
 
 ## Design Principles
 
@@ -71,7 +72,9 @@ trusted network.
 - `docs/policy.example.json`: example event-to-channel routing catalog.
 - `beacon notify`: one-shot notification delivery worker.
 - `docs/telegram.example.json`: secret-free Telegram configuration example.
-- Optional VictoriaLogs event sink.
+- VictoriaLogs remains a log store and optional detector input, not a Beacon
+  alert sink. Beacon writes operational logs to the journal; `journal-upload`
+  forwards them to VictoriaLogs.
 
 ## Documentation
 

@@ -53,10 +53,10 @@ transition before returning `202 Accepted`. Repeating the same `event_id` with
 the same payload is idempotent and returns `202` without incrementing alert
 history. Reusing an `event_id` with a different payload returns `409 Conflict`.
 
-The current bootstrap reads the bearer token from a local file and does not
-accept it as a command-line value. It uses one configured bearer token for the
-server. Per-agent credentials, rotation, TLS configuration, and authorization
-scopes are required before production use.
+The server reads one bearer token per agent from the configured credentials
+directory. Replacing or removing a token file takes effect on the next request,
+enabling rotation and revocation without restart. TLS and authorization scopes
+are required before production use.
 
 ## Alert Lifecycle
 
@@ -95,3 +95,10 @@ The `beacon notify` command is a one-shot worker. It reads Telegram settings
 from JSON and the bot token from the configured token file, then drains due
 jobs. It uses HTTPS and a bounded request timeout. Tokens are never accepted
 as command-line values or included in job payloads.
+
+## Operational Logs
+
+Beacon writes operational logs to stdout/stderr for systemd-journald. The
+`journal-upload` workflow may forward those logs to VictoriaLogs. Beacon does
+not send alert records directly to VictoriaLogs. A separate detector may query
+VictoriaLogs and submit a normalized event to Beacon.

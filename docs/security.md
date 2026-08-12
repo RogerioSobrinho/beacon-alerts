@@ -12,7 +12,8 @@ administration plane.
 - Event facts are allowlisted by event type.
 - Secrets, tokens, cookies, keys, personal data, and backup contents are never
   valid event facts.
-- Agent credentials are individual, revocable, and rotatable.
+- Agent credentials are individual, revocable, and rotatable from the server
+  credentials directory without putting secrets in the repository.
 - The server binds only to an explicitly configured interface.
 - Channel credentials are stored only on the server through a secret mechanism.
 - Logs contain event identifiers and delivery status, not raw payloads.
@@ -20,8 +21,8 @@ administration plane.
 - Telegram tokens are read from a separate restricted file; Telegram config
   contains only the token-file path and chat identifier.
 - Telegram delivery uses HTTPS, a bounded timeout, and never logs the bot token.
-- The bootstrap uses a single bearer token and plain HTTP; it is intended only
-  for a controlled trusted network until per-agent credentials and TLS exist.
+- The bootstrap uses per-agent bearer files but plain HTTP; it is intended only
+  for a controlled trusted network until TLS exists.
 
 ## Threats to Test
 

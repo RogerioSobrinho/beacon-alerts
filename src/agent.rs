@@ -131,7 +131,11 @@ mod tests {
         spool.enqueue(&event).unwrap();
         drop(spool);
 
-        let app = router(server_root.clone(), "test-token".into()).unwrap();
+        let credentials =
+            std::env::temp_dir().join(format!("beacon-agent-credentials-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&credentials).unwrap();
+        std::fs::write(credentials.join("backup.token"), "test-token\n").unwrap();
+        let app = router(server_root.clone(), credentials.clone()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server_task = tokio::spawn(serve_listener(listener, app));
@@ -157,6 +161,7 @@ mod tests {
 
         server_task.abort();
         let _ = server_task.await;
+        std::fs::remove_dir_all(credentials).unwrap();
         std::fs::remove_dir_all(server_root).unwrap();
         std::fs::remove_dir_all(spool_root).unwrap();
     }

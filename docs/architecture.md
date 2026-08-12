@@ -16,14 +16,22 @@ scripts, systemd, applications
        policy + templates
               |
               v
-       Telegram adapter
+        Telegram adapter
+
+journal <- beacon stdout/stderr <- beacon server / notify worker
+    |
+    +-> journal-upload -> VictoriaLogs
+
+VictoriaLogs -> detector/query -> normalized event -> beacon agent
 ```
 
 ## Out of Scope
 
 Beacon does not run checks or probes. Kuma remains responsible for availability
 checks. VictoriaLogs remains responsible for log storage and investigation.
-Beacon does not collect metrics or execute remote commands.
+Detectors may query VictoriaLogs and emit normalized events to Beacon. Beacon
+does not send alert data directly to VictoriaLogs, collect metrics, or execute
+remote commands.
 
 ## Delivery Model
 
@@ -33,13 +41,13 @@ Beacon does not collect metrics or execute remote commands.
 4. The server validates the schema and commits the event before acknowledging it.
 5. The server derives or updates alert state using the event fingerprint.
 6. A notification worker renders and delivers channel messages.
-7. Delivery results remain durable and are retried without creating a new alert.
+7. Beacon writes operational logs to stdout/stderr, collected by the journal.
+8. Delivery results remain durable and are retried without creating a new alert.
 
 The current implementation covers steps 1 through 5 with a local JSON spool,
 authenticated HTTP intake, SQLite event and notification persistence, alert
-state derived by fingerprint, and policy-based notification jobs. A dispatcher
-abstraction supports channel implementations and retry/backoff; Telegram
-delivery is a subsequent stage.
+state derived by fingerprint, policy-based notification jobs, and a one-shot
+Telegram worker. Direct VictoriaLogs integration is intentionally out of scope.
 
 ## Initial Persistence
 
@@ -52,3 +60,5 @@ delivery is a subsequent stage.
   server database. SQLite remains a possible implementation if queue metadata
   requires it.
 - Catalog: versioned configuration reviewed with the source code.
+- Logs: stdout/stderr consumed by systemd-journald; `journal-upload` handles
+  forwarding to VictoriaLogs.

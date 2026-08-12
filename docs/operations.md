@@ -14,10 +14,13 @@ operational constraints.
 - Validate the policy file before starting the server; keep it free of secrets.
 - Validate Telegram config before enabling the one-shot `notify` worker; keep
   the token file separately protected and root-owned.
-- Store server and agent transport tokens in root-owned files with restrictive
-  permissions; do not pass them on the command line.
+- Store each agent transport token as a separate root-owned file in the server
+  credentials directory with restrictive permissions; do not pass tokens on the
+  command line.
 - Do not expose the bootstrap HTTP endpoint beyond the trusted management
-  network. It has no TLS or per-agent authorization yet.
+  network. It has no TLS yet.
+- Send Beacon stdout/stderr to journald and let `journal-upload` handle
+  forwarding to VictoriaLogs; do not add a direct VictoriaLogs client.
 
 ## Validation Before Production
 

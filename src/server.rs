@@ -25,14 +25,55 @@ use crate::policy::PolicyCatalog;
 pub struct ServerConfig {
     pub bind: String,
     pub data: PathBuf,
-    pub token: String,
+    pub credentials_dir: PathBuf,
     pub policy: PolicyCatalog,
 }
 
 #[derive(Clone)]
 pub struct ServerState {
-    token: Arc<String>,
+    credentials: Arc<CredentialStore>,
     events: Arc<ServerEventStore>,
+}
+
+#[derive(Clone)]
+pub struct CredentialStore {
+    directory: PathBuf,
+}
+
+impl CredentialStore {
+    pub fn new(directory: PathBuf) -> Result<Self> {
+        if !directory.is_dir() {
+            bail!(
+                "agent credential directory does not exist or is not a directory: {}",
+                directory.display()
+            );
+        }
+        Ok(Self { directory })
+    }
+
+    fn authorized(&self, presented: &str) -> Result<bool> {
+        let entries = fs::read_dir(&self.directory).with_context(|| {
+            format!(
+                "read agent credential directory {}",
+                self.directory.display()
+            )
+        })?;
+        let mut matched = false;
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let token = fs::read_to_string(entry.path())?.trim().to_owned();
+            if token.is_empty() {
+                continue;
+            }
+            let equal: bool = token.as_bytes().ct_eq(presented.as_bytes()).into();
+            matched |= equal;
+        }
+        Ok(matched)
+    }
 }
 
 pub struct ServerEventStore {
@@ -543,7 +584,7 @@ pub async fn serve(args: ServerConfig) -> Result<()> {
         .bind
         .parse()
         .with_context(|| format!("invalid server bind address {}", args.bind))?;
-    let router = router_with_policy(args.data, args.token, args.policy)?;
+    let router = router_with_credentials(args.data, args.credentials_dir, args.policy)?;
     let listener = TcpListener::bind(bind).await?;
     println!("Beacon server listening on {}", listener.local_addr()?);
     axum::serve(listener, router).await?;
@@ -555,16 +596,17 @@ pub async fn serve_listener(listener: TcpListener, router: Router) -> Result<()>
     Ok(())
 }
 
-pub fn router(data: PathBuf, token: String) -> Result<Router> {
-    router_with_policy(data, token, PolicyCatalog::default())
+pub fn router(data: PathBuf, credentials_dir: PathBuf) -> Result<Router> {
+    router_with_credentials(data, credentials_dir, PolicyCatalog::default())
 }
 
-pub fn router_with_policy(data: PathBuf, token: String, policy: PolicyCatalog) -> Result<Router> {
-    if token.trim().is_empty() {
-        bail!("server token cannot be empty");
-    }
+pub fn router_with_credentials(
+    data: PathBuf,
+    credentials_dir: PathBuf,
+    policy: PolicyCatalog,
+) -> Result<Router> {
     Ok(build_router(ServerState {
-        token: Arc::new(token),
+        credentials: Arc::new(CredentialStore::new(credentials_dir)?),
         events: Arc::new(ServerEventStore::open_with_policy(data, policy)?),
     }))
 }
@@ -587,7 +629,7 @@ async fn accept_event(
     headers: HeaderMap,
     Json(event): Json<Event>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, state.token.as_str()) {
+    if !authorized(&headers, &state.credentials).await {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "unauthorized" })),
@@ -640,7 +682,7 @@ async fn list_alerts(
     headers: HeaderMap,
     Query(query): Query<AlertQuery>,
 ) -> impl IntoResponse {
-    if !authorized(&headers, state.token.as_str()) {
+    if !authorized(&headers, &state.credentials).await {
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({ "error": "unauthorized" })),
@@ -679,12 +721,21 @@ async fn list_alerts(
     }
 }
 
-fn authorized(headers: &HeaderMap, expected: &str) -> bool {
-    headers
+async fn authorized(headers: &HeaderMap, credentials: &CredentialStore) -> bool {
+    let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|token| token.as_bytes().ct_eq(expected.as_bytes()).into())
+        .map(str::to_owned)
+    else {
+        return false;
+    };
+    let credentials = credentials.clone();
+    tokio::task::spawn_blocking(move || credentials.authorized(&token))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -720,22 +771,33 @@ mod tests {
             .unwrap()
     }
 
+    fn credentials() -> PathBuf {
+        let directory = std::env::temp_dir().join(format!("beacon-credentials-{}", Uuid::new_v4()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("backup.token"), "test-token\n").unwrap();
+        directory
+    }
+
     #[tokio::test]
     async fn health_is_public() {
         let root = std::env::temp_dir().join(format!("beacon-health-{}", Uuid::new_v4()));
-        let app = router(root.clone(), "test-token".into()).unwrap();
+        let credentials = credentials();
+        let app = router(root.clone(), credentials.clone()).unwrap();
         let response = app
+            .clone()
             .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        fs::remove_dir_all(credentials).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn firing_is_deduplicated_and_resolved() {
         let root = std::env::temp_dir().join(format!("beacon-lifecycle-{}", Uuid::new_v4()));
-        let app = router(root.clone(), "test-token".into()).unwrap();
+        let credentials = credentials();
+        let app = router(root.clone(), credentials.clone()).unwrap();
         let fingerprint = "backup/restic/age";
         let firing_one = test_event(EventState::Firing, Uuid::new_v4().to_string());
         let firing_two = test_event(EventState::Firing, Uuid::new_v4().to_string());
@@ -755,13 +817,15 @@ mod tests {
         assert_eq!(alerts[0].status, AlertStatus::Resolved);
         assert_eq!(alerts[0].event_count, 3);
         drop(store);
+        fs::remove_dir_all(credentials).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn duplicate_event_is_idempotent_and_conflicting_payload_is_rejected() {
         let root = std::env::temp_dir().join(format!("beacon-idempotency-{}", Uuid::new_v4()));
-        let app = router(root.clone(), "test-token".into()).unwrap();
+        let credentials = credentials();
+        let app = router(root.clone(), credentials.clone()).unwrap();
         let event_id = Uuid::new_v4().to_string();
         let event = test_event(EventState::Firing, event_id);
         let mut changed = event.clone();
@@ -781,13 +845,15 @@ mod tests {
         let alerts = store.list_alerts(None, 10).unwrap();
         assert_eq!(alerts[0].event_count, 1);
         drop(store);
+        fs::remove_dir_all(credentials).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn alerts_endpoint_requires_auth_and_filters_status() {
         let root = std::env::temp_dir().join(format!("beacon-query-{}", Uuid::new_v4()));
-        let app = router(root.clone(), "test-token".into()).unwrap();
+        let credentials = credentials();
+        let app = router(root.clone(), credentials.clone()).unwrap();
         let event = test_event(EventState::Firing, Uuid::new_v4().to_string());
         assert_eq!(
             app.clone()
@@ -806,6 +872,7 @@ mod tests {
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::get("/v1/alerts?status=firing&limit=10")
                     .header(header::AUTHORIZATION, "Bearer test-token")
@@ -816,6 +883,58 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         drop(response);
+        drop(app);
+        fs::remove_dir_all(credentials).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn credentials_can_be_rotated_and_revoked_without_restart() {
+        let root = std::env::temp_dir().join(format!("beacon-credentials-{}", Uuid::new_v4()));
+        let credentials = credentials();
+        let app = router(root.clone(), credentials.clone()).unwrap();
+        let event = test_event(EventState::Firing, Uuid::new_v4().to_string());
+
+        let old_token = request_for(&event);
+        assert_eq!(
+            app.clone().oneshot(old_token).await.unwrap().status(),
+            StatusCode::ACCEPTED
+        );
+
+        fs::write(credentials.join("backup.token"), "rotated-token\n").unwrap();
+        let rejected = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/events")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&event).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+
+        let rotated = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/events")
+                    .header(header::AUTHORIZATION, "Bearer rotated-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&test_event(
+                            EventState::Info,
+                            Uuid::new_v4().to_string(),
+                        ))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rotated.status(), StatusCode::ACCEPTED);
+        drop(app);
+        fs::remove_dir_all(credentials).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -50,9 +50,9 @@ struct ServerArgs {
     /// Directory where accepted events are durably stored.
     #[arg(long, default_value = "/var/lib/beacon/events")]
     data: PathBuf,
-    /// File containing the bearer token required by the event intake endpoint.
-    #[arg(long, default_value = "/etc/beacon/server.token")]
-    token_file: PathBuf,
+    /// Directory containing one bearer token file per agent.
+    #[arg(long, default_value = "/etc/beacon/agents.d")]
+    credentials_dir: PathBuf,
     /// JSON file containing event-to-channel notification policies.
     #[arg(long)]
     policy_file: Option<PathBuf>,
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
             serve(ServerConfig {
                 bind: args.bind,
                 data: args.data,
-                token: read_token(&args.token_file)?,
+                credentials_dir: args.credentials_dir,
                 policy: read_policy(args.policy_file.as_deref())?,
             })
             .await?;
