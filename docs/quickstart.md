@@ -10,20 +10,20 @@ This is the shortest supported path for a Beacon pilot. It assumes:
 The server is container-only. The agent is the only native binary published in
 GitHub Releases.
 
-## 1. Start The Server
+## 1. Install And Start The Server
 
-On the server host, create the persistent directories once:
+Download `install/beacon-server-install.sh` from the selected release, inspect
+it, and run it on the server host with the immutable image reference:
 
 ```sh
-sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/beacon/events
-sudo install -d -o root -g 10001 -m 0770 /etc/beacon/agents.d
-sudo install -d -o root -g 10001 -m 0770 /etc/beacon/enrollment
-sudo install -d -o root -g 10001 -m 0750 /opt/beacon
+sudo IMAGE_REF=ghcr.io/rogeriosobrinho/beacon-alerts@sha256:... \
+  ./beacon-server-install.sh
 ```
 
-Download `compose.yaml` from the selected release, set the immutable image in
-`/opt/beacon/.env`, and place `policy.json`, `telegram.json`, and
-`telegram.token` under `/etc/beacon`. Do not put secret values in `.env` or Git.
+The installer creates the directories, downloads the pinned Compose file,
+writes `.env`, creates an empty policy only if absent, and validates Compose.
+Place `policy.json`, `telegram.json`, and `telegram.token` under `/etc/beacon`
+through the approved secret procedure. Do not put secret values in `.env` or Git.
 
 Then run:
 
@@ -36,7 +36,19 @@ sudo docker compose --env-file /opt/beacon/.env -f /opt/beacon/compose.yaml up -
 The server exposes `8787` only to approved agent hosts. Plain HTTP requires
 `--allow-http` and is for a trusted internal pilot only.
 
-## 2. Enroll One Agent
+## 2. Install And Enroll One Agent
+
+Download the matching `beacon-agent` release asset, extract it, and run the
+installer on the agent host. Use the existing least-privilege service account:
+
+```sh
+sudo SERVICE_USER=media SERVER_URL=http://SERVER:8787 ALLOW_HTTP=1 \
+  ./beacon-agent-install.sh
+```
+
+The installer creates the binary, spool, hardened service, and periodic timer.
+It does not create users, read secrets, change firewall rules, or enroll the
+host.
 
 Create a short-lived code on the server:
 

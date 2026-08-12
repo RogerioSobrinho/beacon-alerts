@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-rc4
+
+- Added reviewed idempotent installers for the server and native agent.
+- Added a three-phase quickstart that keeps secrets, firewall changes, and
+  enrollment as explicit operator-controlled steps.
+- Documented the systemd timer model and the homelab pilot workflow.
+
 ## 0.1.0-rc3
 
 - Split the runtime into `beacon-server` and `beacon-agent` binaries.

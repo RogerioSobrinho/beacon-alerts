@@ -8,6 +8,10 @@ For the normal setup, start with [Quickstart](quickstart.md). This document is
 the detailed reference for operators who need to customize paths, permissions,
 TLS, policy, or rollback.
 
+The reviewed installers in `install/` automate the repetitive filesystem,
+Compose, binary, and systemd setup. They do not create users, transport secrets,
+change firewalls, enroll agents, or start services automatically.
+
 ## Roles
 
 The recommended layout is:

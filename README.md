@@ -55,6 +55,11 @@ GitHub Releases publish `beacon-agent` assets for Linux x86_64, macOS x86_64,
 macOS arm64, and Windows x86_64. The `beacon-server` is published only as the
 versioned GHCR container image.
 
+The reviewed installers in [`install/`](install/) automate the repetitive
+directory, permission, Compose, binary, and systemd setup. They intentionally
+leave secrets, firewall changes, enrollment, and service start as explicit
+operator actions.
+
 ```sh
 cp .env.example /opt/beacon/.env
 # Edit BEACON_IMAGE_REF to the reviewed image digest.
