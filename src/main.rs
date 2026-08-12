@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use beacon_alerts::agent::{drain, AgentConfig};
 use beacon_alerts::model::{Event, EventState, Severity};
+use beacon_alerts::notification::{
+    NotificationChannel, NotificationDispatcher, TelegramChannel, TelegramConfig,
+};
 use beacon_alerts::policy::PolicyCatalog;
 use beacon_alerts::server::{serve, ServerConfig};
 use beacon_alerts::spool::Spool;
@@ -35,6 +38,8 @@ enum Command {
     Send(SendArgs),
     /// Inspect events waiting in a local spool.
     Replay(ReplayArgs),
+    /// Deliver pending server notifications through configured channels.
+    Notify(NotifyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -106,6 +111,25 @@ struct ReplayArgs {
     spool: PathBuf,
 }
 
+#[derive(Debug, Args)]
+struct NotifyArgs {
+    /// Server data directory containing the SQLite notification queue.
+    #[arg(long, default_value = "/var/lib/beacon/events")]
+    data: PathBuf,
+    /// JSON file containing Telegram channel configuration.
+    #[arg(long)]
+    telegram_config: PathBuf,
+    /// Maximum jobs to claim in this run.
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+    /// Maximum delivery attempts per job.
+    #[arg(long, default_value_t = 3)]
+    max_attempts: u32,
+    /// Base retry delay in seconds.
+    #[arg(long, default_value_t = 30)]
+    retry_delay_seconds: u64,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
@@ -132,7 +156,22 @@ async fn main() -> Result<()> {
         }
         Command::Send(args) => send_event(args)?,
         Command::Replay(args) => replay_events(args)?,
+        Command::Notify(args) => {
+            tokio::task::spawn_blocking(move || notify(args)).await??;
+        }
     }
+    Ok(())
+}
+
+fn notify(args: NotifyArgs) -> Result<()> {
+    let store = beacon_alerts::server::ServerEventStore::open(args.data)?;
+    let channel: std::sync::Arc<dyn NotificationChannel> = std::sync::Arc::new(
+        TelegramChannel::from_config(TelegramConfig::load(&args.telegram_config)?)?,
+    );
+    let dispatcher =
+        NotificationDispatcher::new(vec![channel], args.max_attempts, args.retry_delay_seconds)?;
+    let delivered = dispatcher.deliver_due(&store, args.limit)?;
+    println!("delivered {delivered} notification(s)");
     Ok(())
 }
 

@@ -52,7 +52,17 @@ pub struct NotificationJob {
     pub attempts: u32,
     pub next_attempt_at: String,
     pub last_error: Option<String>,
+    pub retryable: bool,
     pub sent_at: Option<String>,
+}
+
+pub struct NotificationFailureUpdate<'a> {
+    pub attempts: u32,
+    pub error: &'a str,
+    pub max_attempts: u32,
+    pub retry_delay_seconds: u64,
+    pub retryable: bool,
+    pub now: DateTime<Utc>,
 }
 
 #[derive(Debug, Error)]
@@ -211,11 +221,11 @@ impl ServerEventStore {
         let job = transaction
             .query_row(
                 "SELECT id, event_id, fingerprint, channel, payload, status, attempts,
-                        next_attempt_at, last_error, sent_at
+                        next_attempt_at, last_error, retryable, sent_at
                  FROM notifications
                  WHERE attempts < ?1 AND (
                      status = 'pending'
-                     OR (status = 'failed' AND next_attempt_at <= ?2)
+                     OR (status = 'failed' AND retryable = 1 AND next_attempt_at <= ?2)
                      OR (status = 'in_flight' AND claimed_at <= ?3)
                  )
                  ORDER BY id LIMIT 1",
@@ -251,27 +261,20 @@ impl ServerEventStore {
         Ok(())
     }
 
-    pub fn fail_notification(
-        &self,
-        id: i64,
-        attempts: u32,
-        error: &str,
-        max_attempts: u32,
-        retry_delay_seconds: u64,
-        now: DateTime<Utc>,
-    ) -> Result<()> {
+    pub fn fail_notification(&self, id: i64, update: NotificationFailureUpdate<'_>) -> Result<()> {
         let connection = Connection::open(&self.database)?;
         let status = "failed";
-        let next_attempt_at = if attempts >= max_attempts {
-            now.to_rfc3339()
+        let next_attempt_at = if !update.retryable || update.attempts >= update.max_attempts {
+            update.now.to_rfc3339()
         } else {
-            retry_time(now, attempts, retry_delay_seconds)
+            retry_time(update.now, update.attempts, update.retry_delay_seconds)
         };
         connection.execute(
             "UPDATE notifications
-             SET status = ?1, next_attempt_at = ?2, last_error = ?3, claimed_at = NULL
-             WHERE id = ?4 AND status = 'in_flight'",
-            params![status, next_attempt_at, error, id],
+             SET status = ?1, next_attempt_at = ?2, last_error = ?3,
+                 retryable = ?4, claimed_at = NULL
+             WHERE id = ?5 AND status = 'in_flight'",
+            params![status, next_attempt_at, update.error, update.retryable, id],
         )?;
         Ok(())
     }
@@ -280,7 +283,7 @@ impl ServerEventStore {
         let connection = Connection::open(&self.database)?;
         let mut statement = connection.prepare(
             "SELECT id, event_id, fingerprint, channel, payload, status, attempts,
-                    next_attempt_at, last_error, sent_at
+                    next_attempt_at, last_error, retryable, sent_at
              FROM notifications ORDER BY id",
         )?;
         let rows = statement.query_map([], notification_from_row)?;
@@ -322,11 +325,24 @@ fn initialize_database(connection: &Connection) -> Result<()> {
              attempts INTEGER NOT NULL DEFAULT 0,
              next_attempt_at TEXT NOT NULL,
              last_error TEXT,
+             retryable INTEGER NOT NULL DEFAULT 1,
              claimed_at TEXT,
              sent_at TEXT,
              UNIQUE(event_id, channel)
          );",
     )?;
+    let has_retryable = connection
+        .prepare("PRAGMA table_info(notifications)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .any(|name| name == "retryable");
+    if !has_retryable {
+        connection.execute(
+            "ALTER TABLE notifications ADD COLUMN retryable INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -517,7 +533,8 @@ fn notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notificati
         attempts: row.get(6)?,
         next_attempt_at: row.get(7)?,
         last_error: row.get(8)?,
-        sent_at: row.get(9)?,
+        retryable: row.get::<_, i64>(9)? != 0,
+        sent_at: row.get(10)?,
     })
 }
 

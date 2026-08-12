@@ -1,14 +1,129 @@
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use thiserror::Error;
 
 use crate::model::{AlertRecord, Event};
-use crate::server::{NotificationJob, ServerEventStore};
+use crate::server::{NotificationFailureUpdate, NotificationJob, ServerEventStore};
 
 pub trait NotificationChannel: Send + Sync {
     fn name(&self) -> &str;
     fn send(&self, job: &NotificationJob) -> Result<()>;
+}
+
+#[derive(Debug, Error)]
+pub enum NotificationFailure {
+    #[error("temporary notification failure: {0}")]
+    Temporary(String),
+    #[error("permanent notification failure: {0}")]
+    Permanent(String),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TelegramConfig {
+    pub token_file: std::path::PathBuf,
+    pub chat_id: String,
+    #[serde(default = "default_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout_seconds() -> u64 {
+    10
+}
+
+pub struct TelegramChannel {
+    client: Client,
+    token: String,
+    chat_id: String,
+    endpoint: String,
+}
+
+impl TelegramConfig {
+    pub fn load(path: &std::path::Path) -> Result<Self> {
+        let config: Self = serde_json::from_str(
+            &std::fs::read_to_string(path)
+                .with_context(|| format!("read Telegram config {}", path.display()))?,
+        )
+        .with_context(|| format!("parse Telegram config {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.chat_id.trim().is_empty() || self.chat_id.len() > 128 {
+            bail!("Telegram chat_id must be between 1 and 128 bytes");
+        }
+        if self.timeout_seconds == 0 || self.timeout_seconds > 120 {
+            bail!("Telegram timeout_seconds must be between 1 and 120");
+        }
+        Ok(())
+    }
+}
+
+impl TelegramChannel {
+    pub fn from_config(config: TelegramConfig) -> Result<Self> {
+        config.validate()?;
+        let token = std::fs::read_to_string(&config.token_file)
+            .with_context(|| format!("read Telegram token file {}", config.token_file.display()))?
+            .trim()
+            .to_owned();
+        if token.is_empty() || token.len() > 512 || token.contains(char::is_whitespace) {
+            bail!("Telegram token file contains an invalid token");
+        }
+        let client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .https_only(true)
+            .build()
+            .context("build Telegram HTTPS client")?;
+        Ok(Self {
+            client,
+            token,
+            chat_id: config.chat_id,
+            endpoint: "https://api.telegram.org".into(),
+        })
+    }
+
+    fn endpoint(&self) -> String {
+        format!("{}/bot{}/sendMessage", self.endpoint, self.token)
+    }
+}
+
+impl NotificationChannel for TelegramChannel {
+    fn name(&self) -> &str {
+        "telegram"
+    }
+
+    fn send(&self, job: &NotificationJob) -> Result<()> {
+        let response = self
+            .client
+            .post(self.endpoint())
+            .json(&serde_json::json!({
+                "chat_id": self.chat_id,
+                "text": job.payload,
+                "disable_web_page_preview": true
+            }))
+            .send()
+            .context("send Telegram notification")?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let message = format!("Telegram returned HTTP {status}");
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            return Err(NotificationFailure::Temporary(message).into());
+        }
+        Err(NotificationFailure::Permanent(message).into())
+    }
+}
+
+pub fn failure_is_retryable(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<NotificationFailure>()
+        .is_none_or(|failure| matches!(failure, NotificationFailure::Temporary(_)))
 }
 
 pub struct NotificationDispatcher {
@@ -50,11 +165,14 @@ impl NotificationDispatcher {
             else {
                 store.fail_notification(
                     job.id,
-                    job.attempts,
-                    "notification channel is not configured",
-                    self.max_attempts,
-                    self.retry_delay_seconds,
-                    now,
+                    NotificationFailureUpdate {
+                        attempts: job.attempts,
+                        error: "notification channel is not configured",
+                        max_attempts: self.max_attempts,
+                        retry_delay_seconds: self.retry_delay_seconds,
+                        retryable: false,
+                        now,
+                    },
                 )?;
                 continue;
             };
@@ -63,14 +181,20 @@ impl NotificationDispatcher {
                     store.complete_notification(job.id, now)?;
                     delivered += 1;
                 }
-                Err(error) => store.fail_notification(
-                    job.id,
-                    job.attempts,
-                    &error.to_string(),
-                    self.max_attempts,
-                    self.retry_delay_seconds,
-                    now,
-                )?,
+                Err(error) => {
+                    let error_message = error.to_string();
+                    store.fail_notification(
+                        job.id,
+                        NotificationFailureUpdate {
+                            attempts: job.attempts,
+                            error: &error_message,
+                            max_attempts: self.max_attempts,
+                            retry_delay_seconds: self.retry_delay_seconds,
+                            retryable: failure_is_retryable(&error),
+                            now,
+                        },
+                    )?
+                }
             }
         }
         Ok(delivered)
@@ -193,5 +317,69 @@ mod tests {
         let first = retry_time(now, 1, 2);
         let second = retry_time(now, 2, 2);
         assert!(second > first);
+    }
+
+    #[test]
+    fn telegram_config_rejects_invalid_timeout() {
+        let config = TelegramConfig {
+            token_file: "token".into(),
+            chat_id: "chat".into(),
+            timeout_seconds: 0,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn permanent_failures_are_not_retryable() {
+        let error: anyhow::Error = NotificationFailure::Permanent("bad request".into()).into();
+        assert!(!failure_is_retryable(&error));
+        let error: anyhow::Error = NotificationFailure::Temporary("network".into()).into();
+        assert!(failure_is_retryable(&error));
+    }
+
+    #[test]
+    fn telegram_channel_sends_json_to_local_test_endpoint() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0_u8; 8192];
+            let size = stream.read(&mut buffer).unwrap();
+            let request = String::from_utf8_lossy(&buffer[..size]);
+            assert!(request.contains("\"chat_id\":\"test-chat\""));
+            assert!(request.contains("\"text\":\"critical firing\""));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        let channel = TelegramChannel {
+            client: Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+            token: "test-token".into(),
+            chat_id: "test-chat".into(),
+            endpoint: format!("http://{address}"),
+        };
+        let job = NotificationJob {
+            id: 1,
+            event_id: "event".into(),
+            fingerprint: "fingerprint".into(),
+            channel: "telegram".into(),
+            payload: "critical firing".into(),
+            status: "in_flight".into(),
+            attempts: 1,
+            next_attempt_at: "2026-01-01T00:00:00Z".into(),
+            last_error: None,
+            retryable: true,
+            sent_at: None,
+        };
+        channel.send(&job).unwrap();
+        server.join().unwrap();
     }
 }

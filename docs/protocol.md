@@ -88,3 +88,10 @@ use the unique key `(event_id, channel)`, so event retries cannot enqueue a
 duplicate. Delivery states are `pending`, `in_flight`, `sent`, and `failed`.
 Failed jobs receive exponential retry timestamps and stale `in_flight` jobs
 can be reclaimed after a process crash.
+
+## Telegram Delivery
+
+The `beacon notify` command is a one-shot worker. It reads Telegram settings
+from JSON and the bot token from the configured token file, then drains due
+jobs. It uses HTTPS and a bounded request timeout. Tokens are never accepted
+as command-line values or included in job payloads.

@@ -20,7 +20,8 @@ This repository is an early bootstrap. The CLI shape and event contract are
 provisional. The current stage implements authenticated HTTP intake, atomic
 server-side event persistence, local spooling, and one-shot agent delivery.
 Basic alert lifecycle state, policy routing, and a durable notification queue
-are now implemented. Telegram delivery is not implemented yet.
+are now implemented, including a one-shot Telegram delivery worker. It does
+not run automatically.
 
 ## Bootstrap
 
@@ -31,6 +32,7 @@ beacon server
 beacon agent
 beacon send
 beacon replay
+beacon notify
 ```
 
 The current `send` command renders and durably queues a normalized event in an
@@ -41,6 +43,7 @@ and removes an event only after a successful server response.
 beacon server --token-file /path/to/server.token --data /var/lib/beacon/events
 beacon agent --token-file /path/to/agent.token --spool /var/lib/beacon/spool
 beacon server --policy-file /etc/beacon/policy.json
+beacon notify --data /var/lib/beacon/events --telegram-config /etc/beacon/telegram.json
 ```
 
 The transport bootstrap uses one bearer token per running server. This is not
@@ -66,7 +69,8 @@ trusted network.
 - `beacon replay`: local spool inspection and controlled replay.
 - `GET /v1/alerts`: authenticated inspection of persisted alert state.
 - `docs/policy.example.json`: example event-to-channel routing catalog.
-- Telegram channel adapter.
+- `beacon notify`: one-shot notification delivery worker.
+- `docs/telegram.example.json`: secret-free Telegram configuration example.
 - Optional VictoriaLogs event sink.
 
 ## Documentation

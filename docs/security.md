@@ -17,6 +17,9 @@ administration plane.
 - Channel credentials are stored only on the server through a secret mechanism.
 - Logs contain event identifiers and delivery status, not raw payloads.
 - Transport credentials are read from files rather than command-line arguments.
+- Telegram tokens are read from a separate restricted file; Telegram config
+  contains only the token-file path and chat identifier.
+- Telegram delivery uses HTTPS, a bounded timeout, and never logs the bot token.
 - The bootstrap uses a single bearer token and plain HTTP; it is intended only
   for a controlled trusted network until per-agent credentials and TLS exist.
 

@@ -1,0 +1,5 @@
+{
+  "token_file": "/etc/beacon/telegram.token",
+  "chat_id": "REPLACE_WITH_CHAT_ID",
+  "timeout_seconds": 10
+}
