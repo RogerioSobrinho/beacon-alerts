@@ -52,6 +52,43 @@ pub enum Severity {
     Info,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertStatus {
+    Firing,
+    Resolved,
+    Info,
+}
+
+impl AlertStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Firing => "firing",
+            Self::Resolved => "resolved",
+            Self::Info => "info",
+        }
+    }
+}
+
+impl FromStr for AlertStatus {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "firing" => Ok(Self::Firing),
+            "resolved" => Ok(Self::Resolved),
+            "info" => Ok(Self::Info),
+            _ => Err(format!("invalid alert status: {value}")),
+        }
+    }
+}
+
+impl fmt::Display for AlertStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl FromStr for Severity {
     type Err = String;
 
@@ -93,6 +130,21 @@ pub struct Event {
     pub fingerprint: String,
     pub occurred_at: String,
     pub facts: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AlertRecord {
+    pub fingerprint: String,
+    pub status: AlertStatus,
+    pub severity: Severity,
+    pub event_type: String,
+    pub source: String,
+    pub host_id: String,
+    pub opened_at: String,
+    pub last_seen: String,
+    pub resolved_at: Option<String>,
+    pub event_count: u64,
+    pub last_event_id: String,
 }
 
 impl Event {

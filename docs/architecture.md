@@ -35,13 +35,15 @@ Beacon does not collect metrics or execute remote commands.
 6. A notification worker renders and delivers channel messages.
 7. Delivery results remain durable and are retried without creating a new alert.
 
-The current implementation covers steps 1 through 4 with a local JSON spool and
-an authenticated HTTP intake endpoint. Alert state, notification workers, and
-channel delivery are subsequent stages.
+The current implementation covers steps 1 through 5 with a local JSON spool,
+authenticated HTTP intake, SQLite event persistence, and alert state derived by
+fingerprint. Notification workers and channel delivery are subsequent stages.
 
 ## Initial Persistence
 
-- Server: PostgreSQL for event, alert, notification, client, and policy state.
+- Server bootstrap: bundled SQLite for event and alert state in one transaction.
+- Future production scale: PostgreSQL remains an option for event, alert,
+  notification, client, and policy state if the deployment needs it.
 - Agent bootstrap: atomic JSON files in a local spool, independent from the
   server database. SQLite remains a possible implementation if queue metadata
   requires it.

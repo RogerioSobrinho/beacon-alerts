@@ -10,7 +10,7 @@ operational constraints.
 - Run the server as an unprivileged user.
 - Do not grant Docker socket access.
 - Keep the server reachable only from approved agent hosts.
-- Store PostgreSQL and channel secrets outside the repository.
+- Store the SQLite database and channel secrets outside the repository.
 - Store server and agent transport tokens in root-owned files with restrictive
   permissions; do not pass them on the command line.
 - Do not expose the bootstrap HTTP endpoint beyond the trusted management
@@ -19,6 +19,8 @@ operational constraints.
 ## Validation Before Production
 
 - server restart preserves alert state;
+- repeated events with the same fingerprint update one alert record;
+- a resolved event changes alert state without deleting event history;
 - agent restart preserves its spool;
 - lost acknowledgements do not lose events;
 - Telegram failures retry without alert duplication;

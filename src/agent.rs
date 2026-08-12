@@ -153,10 +153,7 @@ mod tests {
             .list()
             .unwrap()
             .is_empty());
-        assert!(server_root
-            .join("accepted")
-            .join(format!("{}.json", event.event_id))
-            .exists());
+        assert!(server_root.join("beacon.sqlite3").exists());
 
         server_task.abort();
         let _ = server_task.await;
