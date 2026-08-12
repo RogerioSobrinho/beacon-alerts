@@ -21,7 +21,7 @@ homelab has no TLS infrastructure. The listener is bound to the Ops address and
 the firewall must restrict port `8787` to approved agent hosts.
 
 The server and notification worker run in the same container and share one
-SQLite lock. Do not run a second `beacon notify` container against the same data
+SQLite lock. Do not run a second server container against the same data
 directory. The worker is enabled by `--telegram-config` and reads the token from
 the path inside that configuration file.
 

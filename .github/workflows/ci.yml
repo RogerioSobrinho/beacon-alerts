@@ -31,11 +31,20 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Check compilation
-        run: cargo check --all-targets --all-features
+      - name: Check client compilation
+        run: cargo check --bin beacon-agent --no-default-features
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Check server compilation
+        run: cargo check --bin beacon-server --features server
 
-      - name: Run tests
-        run: cargo test --all-targets --all-features
+      - name: Run client Clippy
+        run: cargo clippy --bin beacon-agent --no-default-features -- -D warnings
+
+      - name: Run server Clippy
+        run: cargo clippy --bin beacon-server --features server -- -D warnings
+
+      - name: Run client tests
+        run: cargo test --no-default-features
+
+      - name: Run server tests
+        run: cargo test --features server

@@ -3,7 +3,7 @@ FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd7
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-RUN cargo build --release --locked
+RUN cargo build --release --locked --features server --bin beacon-server
 
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
@@ -11,7 +11,7 @@ RUN groupadd --system --gid 10001 beacon \
     && useradd --system --uid 10001 --gid beacon --home-dir /nonexistent \
        --shell /usr/sbin/nologin beacon
 
-COPY --from=builder /src/target/release/beacon /usr/local/bin/beacon
+COPY --from=builder /src/target/release/beacon-server /usr/local/bin/beacon-server
 
 USER beacon:beacon
-ENTRYPOINT ["/usr/local/bin/beacon"]
+ENTRYPOINT ["/usr/local/bin/beacon-server"]

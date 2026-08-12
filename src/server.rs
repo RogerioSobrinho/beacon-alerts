@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -138,6 +139,12 @@ struct AlertQuery {
     limit: usize,
 }
 
+#[derive(Debug, Deserialize)]
+struct EnrollmentRequest {
+    name: String,
+    code: String,
+}
+
 fn default_limit() -> usize {
     100
 }
@@ -177,6 +184,82 @@ impl ServerEventStore {
             policy,
             _lock: lock,
         })
+    }
+
+    #[cfg(test)]
+    fn create_enrollment(&self, name: &str, code: &str, ttl_seconds: u64) -> Result<()> {
+        validate_agent_name(name)?;
+        if code.trim().is_empty() {
+            bail!("enrollment code cannot be empty");
+        }
+        if ttl_seconds == 0 {
+            bail!("enrollment TTL must be greater than zero");
+        }
+        let connection = Connection::open(&self.database)?;
+        connection.execute(
+            "INSERT INTO enrollments (code_hash, name, expires_at) VALUES (?1, ?2, ?3)",
+            params![
+                hash_secret(code),
+                name,
+                (Utc::now() + chrono::Duration::seconds(ttl_seconds as i64)).to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn consume_enrollment(
+        &self,
+        name: &str,
+        code: &str,
+        credentials_dir: &std::path::Path,
+    ) -> Result<String> {
+        validate_agent_name(name)?;
+        if code.trim().is_empty() {
+            bail!("enrollment code cannot be empty");
+        }
+        let credential_path = credentials_dir.join(format!("{name}.token"));
+        if credential_path.exists() {
+            bail!("agent credential already exists for {name}");
+        }
+        let connection = Connection::open(&self.database)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction = connection.unchecked_transaction()?;
+        let Some((enrolled_name, expires_at, consumed_at)) = transaction
+            .query_row(
+                "SELECT name, expires_at, consumed_at FROM enrollments WHERE code_hash = ?1",
+                params![hash_secret(code)],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            bail!("invalid enrollment code");
+        };
+        if enrolled_name != name {
+            bail!("enrollment code does not match agent name");
+        }
+        if consumed_at.is_some() {
+            bail!("enrollment code has already been used");
+        }
+        let expires_at = DateTime::parse_from_rfc3339(&expires_at)
+            .context("parse enrollment expiry")?
+            .with_timezone(&Utc);
+        if Utc::now() >= expires_at {
+            bail!("enrollment code has expired");
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        transaction.execute(
+            "UPDATE enrollments SET consumed_at = ?1 WHERE code_hash = ?2 AND consumed_at IS NULL",
+            params![Utc::now().to_rfc3339(), hash_secret(code)],
+        )?;
+        write_credential(&credential_path, &token)?;
+        transaction.commit()?;
+        Ok(token)
     }
 
     pub(crate) fn accept(&self, event: &Event) -> Result<EventResult> {
@@ -381,6 +464,12 @@ fn initialize_database(connection: &Connection) -> Result<()> {
              claimed_at TEXT,
              sent_at TEXT,
              UNIQUE(event_id, channel)
+         );
+         CREATE TABLE IF NOT EXISTS enrollments (
+             code_hash TEXT PRIMARY KEY,
+             name TEXT NOT NULL,
+             expires_at TEXT NOT NULL,
+             consumed_at TEXT
          );",
     )?;
     let has_retryable = connection
@@ -654,6 +743,46 @@ pub fn router_with_credentials(
     Ok(build_router(server_state(data, credentials_dir, policy)?))
 }
 
+pub fn create_enrollment(
+    data: PathBuf,
+    credentials_dir: PathBuf,
+    name: String,
+    code_file: PathBuf,
+    ttl_seconds: u64,
+) -> Result<()> {
+    fs::create_dir_all(&credentials_dir).with_context(|| {
+        format!(
+            "create agent credential directory {}",
+            credentials_dir.display()
+        )
+    })?;
+    let code = uuid::Uuid::new_v4().to_string();
+    validate_agent_name(&name)?;
+    if ttl_seconds == 0 {
+        bail!("enrollment TTL must be greater than zero");
+    }
+    write_secret_file(&code_file, &code)?;
+    let result = (|| {
+        fs::create_dir_all(&data)?;
+        let connection = Connection::open(data.join("beacon.sqlite3"))?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        initialize_database(&connection)?;
+        connection.execute(
+            "INSERT INTO enrollments (code_hash, name, expires_at) VALUES (?1, ?2, ?3)",
+            params![
+                hash_secret(&code),
+                name,
+                (Utc::now() + chrono::Duration::seconds(ttl_seconds as i64)).to_rfc3339()
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&code_file);
+    }
+    result
+}
+
 fn server_state(
     data: PathBuf,
     credentials_dir: PathBuf,
@@ -693,9 +822,90 @@ fn build_router(state: ServerState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/events", post(accept_event))
+        .route("/v1/enroll", post(enroll_agent))
         .route("/v1/alerts", get(list_alerts))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
+}
+
+async fn enroll_agent(
+    State(state): State<ServerState>,
+    Json(request): Json<EnrollmentRequest>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking({
+        let events = state.events.clone();
+        let credentials = state.credentials.directory.clone();
+        move || events.consume_enrollment(&request.name, &request.code, &credentials)
+    })
+    .await;
+    match result {
+        Ok(Ok(token)) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "token": token })),
+        ),
+        Ok(Err(error)) => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        ),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        ),
+    }
+}
+
+fn validate_agent_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.len() > 64 || name == "." || name == ".." {
+        bail!("agent name must be 1-64 characters and cannot be '.' or '..'");
+    }
+    if !name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("agent name may contain only ASCII letters, numbers, '.', '_' and '-'");
+    }
+    Ok(())
+}
+
+fn hash_secret(secret: &str) -> String {
+    format!("{:x}", Sha256::digest(secret.trim().as_bytes()))
+}
+
+fn write_secret_file(path: &std::path::Path, secret: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("secret file must have a parent directory")?;
+    if path.exists() {
+        bail!("secret file {} already exists", path.display());
+    }
+    fs::create_dir_all(parent)?;
+    let temporary = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    use std::io::Write;
+    file.write_all(secret.trim().as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    drop(file);
+    fs::hard_link(&temporary, path).with_context(|| {
+        format!(
+            "install secret file {}; it may already exist",
+            path.display()
+        )
+    })?;
+    fs::remove_file(temporary)?;
+    Ok(())
+}
+
+fn write_credential(path: &std::path::Path, token: &str) -> Result<()> {
+    write_secret_file(path, token)
 }
 
 async fn healthz() -> impl IntoResponse {
@@ -1030,6 +1240,76 @@ mod tests {
             assert_eq!(alerts.len(), 1);
             assert_eq!(alerts[0].last_event_id, event.event_id);
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enrollment_code_is_single_use_and_creates_credential() {
+        let root = std::env::temp_dir().join(format!("beacon-enrollment-{}", Uuid::new_v4()));
+        let credentials = credentials();
+        let store = ServerEventStore::open(root.clone()).unwrap();
+        let code = "one-time-code";
+        store.create_enrollment("media", code, 900).unwrap();
+        let token = store
+            .consume_enrollment("media", code, &credentials)
+            .unwrap();
+        assert!(!token.is_empty());
+        assert!(credentials.join("media.token").exists());
+        assert!(store
+            .consume_enrollment("media", code, &credentials)
+            .is_err());
+        drop(store);
+        fs::remove_dir_all(credentials).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn enrollment_rejects_expired_code_and_invalid_name() {
+        let root =
+            std::env::temp_dir().join(format!("beacon-enrollment-expired-{}", Uuid::new_v4()));
+        let credentials = credentials();
+        let store = ServerEventStore::open(root.clone()).unwrap();
+        store
+            .create_enrollment("media", "expired-code", 0)
+            .unwrap_err();
+        store.create_enrollment("media", "valid-code", 1).unwrap();
+        assert!(store
+            .consume_enrollment("bad/name", "valid-code", &credentials)
+            .is_err());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert!(store
+            .consume_enrollment("media", "valid-code", &credentials)
+            .is_err());
+        drop(store);
+        fs::remove_dir_all(credentials).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn enrollment_endpoint_consumes_code_and_returns_token() {
+        let root = std::env::temp_dir().join(format!("beacon-enrollment-http-{}", Uuid::new_v4()));
+        let credentials = credentials();
+        let store = ServerEventStore::open(root.clone()).unwrap();
+        store.create_enrollment("media", "http-code", 900).unwrap();
+        drop(store);
+        let app = router(root.clone(), credentials.clone()).unwrap();
+        let response = app
+            .oneshot(
+                Request::post("/v1/enroll")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "name": "media", "code": "http-code" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert!(!fs::read_to_string(credentials.join("media.token"))
+            .unwrap()
+            .trim()
+            .is_empty());
+        fs::remove_dir_all(credentials).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }

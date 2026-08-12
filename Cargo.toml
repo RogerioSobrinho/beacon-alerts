@@ -1,6 +1,6 @@
 [package]
 name = "beacon-alerts"
-version = "0.1.0"
+version = "0.1.0-rc3"
 edition = "2021"
 description = "Distributed event and alert notification system"
 license = "Apache-2.0"
@@ -9,9 +9,18 @@ readme = "README.md"
 keywords = ["alerts", "notifications", "telegram", "events"]
 categories = ["command-line-utilities", "web-programming::http-server"]
 
+[features]
+default = []
+server = []
+
 [[bin]]
-name = "beacon"
-path = "src/main.rs"
+name = "beacon-server"
+path = "src/bin/beacon-server.rs"
+required-features = ["server"]
+
+[[bin]]
+name = "beacon-agent"
+path = "src/bin/beacon-agent.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -24,6 +33,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "time"] }

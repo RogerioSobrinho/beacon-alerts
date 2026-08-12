@@ -14,6 +14,8 @@ administration plane.
   valid event facts.
 - Agent credentials are individual, revocable, and rotatable from the server
   credentials directory without putting secrets in the repository.
+- Enrollment codes are single-use, expiring, stored only as hashes by the server,
+  and must be transferred and deleted as bootstrap secrets.
 - The server binds only to an explicitly configured interface.
 - Channel credentials are stored only on the server through a secret mechanism.
 - Logs contain event identifiers and delivery status, not raw payloads.

@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -7,6 +9,21 @@ use tokio::time::sleep;
 
 use crate::model::Event;
 use crate::spool::Spool;
+
+#[derive(Debug)]
+pub struct EnrollmentConfig {
+    pub server: String,
+    pub name: String,
+    pub code_file: PathBuf,
+    pub token_file: PathBuf,
+    pub ca_file: Option<PathBuf>,
+    pub allow_http: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct EnrollmentResponse {
+    token: String,
+}
 
 #[derive(Debug)]
 pub struct AgentConfig {
@@ -58,6 +75,76 @@ pub async fn drain(args: AgentConfig) -> Result<usize> {
         delivered += 1;
     }
     Ok(delivered)
+}
+
+pub async fn enroll(args: EnrollmentConfig) -> Result<()> {
+    if args.name.trim().is_empty() {
+        bail!("agent name cannot be empty");
+    }
+    let code = fs::read_to_string(&args.code_file)
+        .with_context(|| format!("read enrollment code file {}", args.code_file.display()))?;
+    let code = code.trim();
+    if code.is_empty() {
+        bail!("enrollment code file {} is empty", args.code_file.display());
+    }
+    let client = build_client(&args.server, args.ca_file.as_deref(), args.allow_http)?;
+    let url = format!("{}/v1/enroll", args.server.trim_end_matches('/'));
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({ "name": args.name, "code": code }))
+        .send()
+        .await
+        .context("send enrollment request to server")?;
+    if !response.status().is_success() {
+        bail!("server returned {}", response.status());
+    }
+    let enrollment: EnrollmentResponse = response
+        .json()
+        .await
+        .context("decode enrollment response")?;
+    if enrollment.token.trim().is_empty() {
+        bail!("server returned an empty agent token");
+    }
+    write_token(&args.token_file, &enrollment.token)
+}
+
+fn write_token(path: &Path, token: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .context("agent token file must have a parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("create agent token directory {}", parent.display()))?;
+    let temporary = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)
+        .with_context(|| format!("create temporary agent token file {}", temporary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(token.trim().as_bytes())?;
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    drop(file);
+    if path.exists() {
+        let _ = fs::remove_file(&temporary);
+        bail!(
+            "agent token file {} already exists; remove it before enrolling",
+            path.display()
+        );
+    }
+    fs::hard_link(&temporary, path).with_context(|| {
+        format!(
+            "install agent token file {}; it may already exist",
+            path.display()
+        )
+    })?;
+    fs::remove_file(temporary)?;
+    Ok(())
 }
 
 fn build_client(
@@ -123,10 +210,15 @@ async fn submit_event(client: &Client, server: &str, token: &str, event: &Event)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "server")]
     use crate::model::{EventState, Severity};
+    #[cfg(feature = "server")]
     use crate::server::{router, serve_listener};
+    #[cfg(feature = "server")]
     use std::collections::BTreeMap;
+    #[cfg(feature = "server")]
     use tokio::net::TcpListener;
+    #[cfg(feature = "server")]
     use uuid::Uuid;
 
     #[test]
@@ -135,6 +227,7 @@ mod tests {
         assert!(error.to_string().contains("requires an HTTPS"));
     }
 
+    #[cfg(feature = "server")]
     fn test_event() -> Event {
         Event {
             schema_version: 1,
@@ -150,6 +243,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "server")]
     #[tokio::test]
     async fn drain_delivers_event_and_removes_it_after_ack() {
         let server_root =

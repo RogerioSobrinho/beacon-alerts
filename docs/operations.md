@@ -17,6 +17,9 @@ operational constraints.
 - Store each agent transport token as a separate root-owned file in the server
   credentials directory with restrictive permissions; do not pass tokens on the
   command line.
+- Create agent tokens through the one-time enrollment workflow; do not manually
+  copy bearer values between hosts.
+- Remove enrollment code files after successful use and verify their short TTL.
 - Do not expose the service beyond the trusted management network, even with
   TLS, until the deployment has been validated.
 - For non-development operation, configure both server TLS files and the agent

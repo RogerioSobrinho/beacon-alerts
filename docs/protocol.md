@@ -46,6 +46,7 @@ The bootstrap server exposes:
 - `GET /healthz`: unauthenticated liveness response;
 - `POST /v1/events`: authenticated JSON event intake.
 - `GET /v1/alerts`: authenticated alert-state inspection.
+- `POST /v1/enroll`: one-time agent enrollment using a server-created code.
 
 Clients send `Authorization: Bearer <agent-token>` and an `Event v1` JSON body.
 The server validates and atomically stores the event and its alert-state
@@ -57,6 +58,22 @@ The server reads one bearer token per agent from the configured credentials
 directory. Replacing or removing a token file takes effect on the next request,
 enabling rotation and revocation without restart. TLS and authorization scopes
 are required before production use.
+
+### Enrollment v1
+
+An operator runs `beacon-server agent create --name <name> --code-file <path>`.
+The server stores only a SHA-256 hash of the generated code in SQLite, with a
+finite TTL, and writes the plaintext code only to the restricted code file. The
+agent sends the code and name to `POST /v1/enroll`; the server consumes the code
+once, creates a random per-agent bearer credential under `credentials_dir`, and
+returns that credential in the HTTPS response. The agent writes it to its token
+file with mode `0600` and refuses to overwrite an existing token file.
+
+Enrollment is intentionally unauthenticated because the one-time code is the
+bootstrap credential. Protect the code file like a secret, transfer it through
+the approved operator channel, use HTTPS outside local development, and remove
+the code file after successful enrollment. A code cannot be reused, used for a
+different agent name, or used after expiry.
 
 ## Alert Lifecycle
 
@@ -91,10 +108,10 @@ can be reclaimed after a process crash.
 
 ## Telegram Delivery
 
-The `beacon notify` command is a one-shot worker. It reads Telegram settings
-from JSON and the bot token from the configured token file, then drains due
-jobs. It uses HTTPS and a bounded request timeout. Tokens are never accepted
-as command-line values or included in job payloads.
+The `beacon-server` notification worker reads Telegram settings from JSON and
+the bot token from the configured token file, then drains due jobs. It uses
+HTTPS and a bounded request timeout. Tokens are never accepted as command-line
+values or included in job payloads.
 
 ## Operational Logs
 

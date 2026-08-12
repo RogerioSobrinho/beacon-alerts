@@ -7,22 +7,22 @@ a server on the central operations host.
 scripts, systemd, applications
               |
               v
-       beacon agent
+       beacon-agent
        local durable spool
               |
               v
-       beacon server
+       beacon-server
        event + alert state
        policy + templates
               |
               v
         Telegram adapter
 
-journal <- beacon stdout/stderr <- beacon server / notify worker
+journal <- beacon stdout/stderr <- beacon-server / notification worker
     |
     +-> journal-upload -> VictoriaLogs
 
-VictoriaLogs -> detector/query -> normalized event -> beacon agent
+VictoriaLogs -> detector/query -> normalized event -> beacon-agent
 ```
 
 ## Out of Scope

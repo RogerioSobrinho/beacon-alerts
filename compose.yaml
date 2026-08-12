@@ -3,7 +3,7 @@ services:
     image: ${BEACON_IMAGE_REF:?set BEACON_IMAGE_REF}
     restart: unless-stopped
     command:
-      - server
+      - run
       - --bind
       - 0.0.0.0:8787
       - --data
@@ -34,7 +34,8 @@ services:
       - no-new-privileges:true
     volumes:
       - /var/lib/beacon/events:/var/lib/beacon/events:rw
-      - /etc/beacon/agents.d:/etc/beacon/agents.d:ro
+      - /etc/beacon/agents.d:/etc/beacon/agents.d:rw
+      - /etc/beacon/enrollment:/etc/beacon/enrollment:rw
       - /etc/beacon/policy.json:/etc/beacon/policy.json:ro
       - /etc/beacon/telegram.json:/etc/beacon/telegram.json:ro
       - /etc/beacon/telegram.token:/etc/beacon/telegram.token:ro

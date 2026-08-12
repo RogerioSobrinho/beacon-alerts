@@ -9,7 +9,7 @@ server owns alert state, deduplication, policy, templates, and notification
 delivery. Telegram is the first planned channel.
 
 ```text
-detectors / automations -> beacon agent -> beacon server -> notification channels
+detectors / automations -> beacon-agent -> beacon-server -> notification channels
        |                         |                 |
        |                         |                 +-> journal -> journal-upload -> VictoriaLogs
        +-> query VictoriaLogs (optional detector input)
@@ -25,19 +25,20 @@ configuration before deployment.
 
 ## Bootstrap
 
-The project intentionally starts as one binary with subcommands:
+The project provides separate server and agent binaries:
 
 ```text
-beacon server
-beacon agent
-beacon send
-beacon replay
-beacon notify
+beacon-server run
+beacon-server agent create
+beacon-agent enroll
+beacon-agent run
+beacon-agent send
+beacon-agent replay
 ```
 
-The current `send` command renders and durably queues a normalized event in an
-atomic local JSON spool. `agent` drains that spool to the authenticated server
-and removes an event only after a successful server response.
+The `beacon-agent send` command renders and durably queues a normalized event in
+an atomic local JSON spool. `beacon-agent run` drains that spool to the
+authenticated server and removes an event only after a successful response.
 
 For a complete configuration walkthrough, including directories, permissions,
 tokens, policy, Telegram, Docker Compose, and native agents, see the
@@ -58,10 +59,11 @@ docker compose --env-file /opt/beacon/.env pull
 docker compose --env-file /opt/beacon/.env up -d
 ```
 
-On a producer host, configure the native agent with a matching token file:
+On a producer host, run the enrollment workflow from the configuration guide,
+then configure the native agent with the generated token file:
 
 ```sh
-beacon agent --server http://server.example:8787 --allow-http \
+beacon-agent run --server http://server.example:8787 --allow-http \
   --spool /var/lib/beacon/spool --token-file /etc/beacon/agent.token
 ```
 
@@ -70,19 +72,19 @@ systemd unit, validation and rollback procedure, read
 `docs/configuration.md` before starting a deployment.
 
 ```text
-beacon server --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events \
+beacon-server run --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events \
   --tls-cert /etc/beacon/tls/server.crt --tls-key /etc/beacon/tls/server.key
-beacon agent --server https://beacon.example.internal:8787 \
+beacon-agent run --server https://beacon.example.internal:8787 \
   --ca-file /etc/beacon/tls/ca.crt --token-file /path/to/agent.token \
   --spool /var/lib/beacon/spool
-beacon server --policy-file /etc/beacon/policy.json
-beacon notify --data /var/lib/beacon/events --telegram-config /etc/beacon/telegram.json
+beacon-server run --policy-file /etc/beacon/policy.json
 ```
 
 The server accepts one bearer token file per agent in `--credentials-dir`.
-Adding, replacing, or removing a file rotates or revokes that agent without a
-server restart. TLS and authorization scopes remain required before deployment
-outside a controlled trusted network.
+Create those credentials with a one-time code using `beacon-server agent create`
+and `beacon-agent enroll`. Adding, replacing, or removing a file rotates or
+revokes that agent without a server restart. TLS and authorization scopes remain
+required before deployment outside a controlled trusted network.
 
 TLS certificate issuance and renewal belong to the deployment infrastructure.
 Beacon reads the certificate, private key, and CA files but does not create or
@@ -101,13 +103,13 @@ intended only for local development.
 
 ## Planned Components
 
-- `beacon agent`: local client with durable spool and retry.
-- `beacon server`: authenticated event intake and alert lifecycle.
-- `beacon send`: local CLI for scripts and operators.
-- `beacon replay`: local spool inspection and controlled replay.
+- `beacon-agent`: local client with enrollment, durable spool, and retry.
+- `beacon-server`: authenticated event intake and alert lifecycle.
+- `beacon-agent send`: local CLI for scripts and operators.
+- `beacon-agent replay`: local spool inspection and controlled replay.
 - `GET /v1/alerts`: authenticated inspection of persisted alert state.
 - `docs/policy.example.json`: example event-to-channel routing catalog.
-- `beacon notify`: one-shot notification delivery worker.
+- `beacon-server run`: includes the notification worker when configured.
 - `docs/telegram.example.json`: secret-free Telegram configuration example.
 - VictoriaLogs remains a log store and optional detector input, not a Beacon
   alert sink. Beacon writes operational logs to the journal; `journal-upload`

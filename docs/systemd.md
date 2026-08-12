@@ -16,7 +16,7 @@ Wants=network-online.target
 [Service]
 User=beacon
 Group=beacon
-ExecStart=/usr/local/bin/beacon agent \
+ExecStart=/usr/local/bin/beacon-agent run \
   --server http://192.168.68.62:8787 \
   --allow-http \
   --spool /var/lib/beacon/spool \
@@ -36,10 +36,9 @@ WantedBy=multi-user.target
 
 ## Notification Worker
 
-For the container deployment, the notification worker runs inside the server
-process when `--telegram-config` is supplied. Do not run a second `beacon notify`
-process against the same SQLite directory. The standalone `notify` command is
-available for controlled one-shot operation when the server is stopped.
+For the container deployment, the notification worker runs inside the
+`beacon-server` process when `--telegram-config` is supplied. There is no
+standalone notification binary in the split client/server release.
 
 ## Certificate Lifecycle
 
