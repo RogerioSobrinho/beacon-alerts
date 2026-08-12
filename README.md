@@ -31,8 +31,8 @@ beacon send
 beacon replay
 ```
 
-The current `send` command only renders a normalized event. It does not send
-anything over the network.
+The current `send` command renders and durably queues a normalized event in an
+atomic local JSON spool. It does not send anything over the network yet.
 
 ## Design Principles
 

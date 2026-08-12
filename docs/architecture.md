@@ -38,5 +38,7 @@ Beacon does not collect metrics or execute remote commands.
 ## Initial Persistence
 
 - Server: PostgreSQL for event, alert, notification, client, and policy state.
-- Agent: local SQLite spool, independent from the server database.
+- Agent bootstrap: atomic JSON files in a local spool, independent from the
+  server database. SQLite remains a possible implementation if queue metadata
+  requires it.
 - Catalog: versioned configuration reviewed with the source code.
