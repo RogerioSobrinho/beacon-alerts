@@ -6,6 +6,9 @@ execution, confirm live state over SSH, read `docs/10-operacao.md` and the
 applicable service runbooks, and obtain explicit authorization for every
 privileged or Docker operation.
 
+The operator-facing setup is summarized in `docs/quickstart.md`; this document
+is the homologation checklist, evidence plan, and rollback procedure.
+
 ## Scope
 
 - Deploy `beacon-server` in the existing Ops Docker host.

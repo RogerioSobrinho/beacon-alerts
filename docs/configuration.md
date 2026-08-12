@@ -4,6 +4,10 @@ This guide configures a Beacon server in Docker and a native agent on a
 producer host. It does not create TLS certificates, Telegram credentials, or
 firewall rules. Those belong to the deployment environment.
 
+For the normal setup, start with [Quickstart](quickstart.md). This document is
+the detailed reference for operators who need to customize paths, permissions,
+TLS, policy, or rollback.
+
 ## Roles
 
 The recommended layout is:
@@ -220,8 +224,10 @@ beacon-agent run \
 For TLS, use an `https://` URL and add `--ca-file /etc/beacon/tls/ca.crt`; do
 not use `--allow-http`.
 
-The agent only drains events already in its spool. A detector or script creates
-events with `beacon-agent send`, for example:
+The agent only drains events already in its spool. On systemd hosts, schedule
+the one-shot `beacon-agent run` with the timer shown in
+`docs/quickstart.md`. A detector or script creates events with
+`beacon-agent send`, for example:
 
 ```sh
 beacon-agent send \
@@ -235,8 +241,8 @@ beacon-agent send \
   --spool /var/lib/beacon/spool
 ```
 
-Then run the agent once for a controlled test, or use the systemd unit in
-`docs/systemd.md` for continuous draining.
+Then wait for the next timer execution, or run `beacon-agent run` once for a
+controlled test. See `docs/systemd.md` for the service hardening reference.
 
 ## Validation Checklist
 

@@ -40,9 +40,9 @@ The `beacon-agent send` command renders and durably queues a normalized event in
 an atomic local JSON spool. `beacon-agent run` drains that spool to the
 authenticated server and removes an event only after a successful response.
 
-For a complete configuration walkthrough, including directories, permissions,
-tokens, policy, Telegram, Docker Compose, and native agents, see the
-[Configuration Guide](docs/configuration.md).
+For the shortest supported setup, see the [Quickstart](docs/quickstart.md).
+The [Configuration Guide](docs/configuration.md) contains the complete
+directory, permission, Telegram, rollback, and security reference.
 
 ### Quick Start
 
@@ -122,6 +122,7 @@ intended only for local development.
 ## Documentation
 
 - [Architecture](docs/architecture.md)
+- [Quickstart](docs/quickstart.md)
 - [Event protocol](docs/protocol.md)
 - [Security model](docs/security.md)
 - [Operations](docs/operations.md)

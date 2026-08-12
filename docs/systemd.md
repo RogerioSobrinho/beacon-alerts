@@ -1,9 +1,11 @@
 # Systemd and TLS
 
-Beacon agents are intended to run as native systemd services on event-producing
-VMs. The central server is packaged as a container; see
-`docs/container.md`. Adapt paths, user names, and hardening to the target host
-after reviewing the live system.
+Beacon agents are intended to run as a native one-shot systemd service invoked
+by a timer on event-producing VMs. The central server is packaged as a
+container; see
+`docs/container.md`. Adapt paths and hardening to the target host after
+reviewing the live system. For the homelab Media VM, the existing service
+account is `media`; do not create a new privileged account just for Beacon.
 
 ## Agent
 
@@ -14,8 +16,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=beacon
-Group=beacon
+User=media
+Group=media
 ExecStart=/usr/local/bin/beacon-agent run \
   --server http://192.168.68.62:8787 \
   --allow-http \
@@ -32,6 +34,23 @@ ReadOnlyPaths=/etc/beacon/agent.token
 
 [Install]
 WantedBy=multi-user.target
+```
+
+The service exits successfully after draining the current spool. Enable
+`beacon-agent.timer`, not the service, for periodic delivery:
+
+```ini
+[Unit]
+Description=Run Beacon event agent periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Persistent=true
+Unit=beacon-agent.service
+
+[Install]
+WantedBy=timers.target
 ```
 
 ## Notification Worker
