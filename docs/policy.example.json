@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "name": "critical-backup",
+      "enabled": true,
+      "event_type": "backup.restic.stale",
+      "source": null,
+      "host_id": "backup",
+      "state": "firing",
+      "severity": "critical",
+      "channels": ["telegram"]
+    }
+  ]
+}

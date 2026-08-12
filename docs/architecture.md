@@ -36,12 +36,16 @@ Beacon does not collect metrics or execute remote commands.
 7. Delivery results remain durable and are retried without creating a new alert.
 
 The current implementation covers steps 1 through 5 with a local JSON spool,
-authenticated HTTP intake, SQLite event persistence, and alert state derived by
-fingerprint. Notification workers and channel delivery are subsequent stages.
+authenticated HTTP intake, SQLite event and notification persistence, alert
+state derived by fingerprint, and policy-based notification jobs. A dispatcher
+abstraction supports channel implementations and retry/backoff; Telegram
+delivery is a subsequent stage.
 
 ## Initial Persistence
 
 - Server bootstrap: bundled SQLite for event and alert state in one transaction.
+- Notification jobs: durable SQLite rows with unique `(event_id, channel)` keys,
+  explicit pending/in-flight/sent/failed states, and retry timestamps.
 - Future production scale: PostgreSQL remains an option for event, alert,
   notification, client, and policy state if the deployment needs it.
 - Agent bootstrap: atomic JSON files in a local spool, independent from the

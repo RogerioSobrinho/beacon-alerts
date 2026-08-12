@@ -9,7 +9,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
@@ -18,12 +18,15 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 
 use crate::model::{AlertRecord, AlertStatus, Event, EventState};
+use crate::notification::{render_event, retry_time};
+use crate::policy::PolicyCatalog;
 
 #[derive(Debug)]
 pub struct ServerConfig {
     pub bind: String,
     pub data: PathBuf,
     pub token: String,
+    pub policy: PolicyCatalog,
 }
 
 #[derive(Clone)]
@@ -34,7 +37,22 @@ pub struct ServerState {
 
 pub struct ServerEventStore {
     database: PathBuf,
+    policy: PolicyCatalog,
     _lock: std::fs::File,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotificationJob {
+    pub id: i64,
+    pub event_id: String,
+    pub fingerprint: String,
+    pub channel: String,
+    pub payload: String,
+    pub status: String,
+    pub attempts: u32,
+    pub next_attempt_at: String,
+    pub last_error: Option<String>,
+    pub sent_at: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -46,7 +64,7 @@ struct EventConflict;
 struct MissingAlertState;
 
 #[derive(Debug)]
-struct EventResult {
+pub(crate) struct EventResult {
     duplicate: bool,
     alert: AlertRecord,
 }
@@ -64,6 +82,11 @@ fn default_limit() -> usize {
 
 impl ServerEventStore {
     pub fn open(root: PathBuf) -> Result<Self> {
+        Self::open_with_policy(root, PolicyCatalog::default())
+    }
+
+    pub fn open_with_policy(root: PathBuf, policy: PolicyCatalog) -> Result<Self> {
+        policy.validate()?;
         fs::create_dir_all(&root)
             .with_context(|| format!("create server data directory {}", root.display()))?;
         let lock_path = root.join(".lock");
@@ -89,11 +112,12 @@ impl ServerEventStore {
 
         Ok(Self {
             database,
+            policy,
             _lock: lock,
         })
     }
 
-    fn accept(&self, event: &Event) -> Result<EventResult> {
+    pub(crate) fn accept(&self, event: &Event) -> Result<EventResult> {
         event.validate()?;
         let connection = Connection::open(&self.database)?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -130,6 +154,14 @@ impl ServerEventStore {
             ],
         )?;
         let alert = transition_alert(&transaction, event)?;
+        if event.state != EventState::Firing || alert.event_count == 1 {
+            enqueue_notifications(
+                &transaction,
+                event,
+                &alert,
+                &self.policy.channels_for(event),
+            )?;
+        }
         transaction.commit()?;
 
         Ok(EventResult {
@@ -165,6 +197,96 @@ impl ServerEventStore {
         }
         Ok(alerts)
     }
+
+    pub fn claim_notification(
+        &self,
+        now: DateTime<Utc>,
+        max_attempts: u32,
+    ) -> Result<Option<NotificationJob>> {
+        let connection = Connection::open(&self.database)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let transaction = connection.unchecked_transaction()?;
+        let now_string = now.to_rfc3339();
+        let stale_before = (now - chrono::Duration::minutes(5)).to_rfc3339();
+        let job = transaction
+            .query_row(
+                "SELECT id, event_id, fingerprint, channel, payload, status, attempts,
+                        next_attempt_at, last_error, sent_at
+                 FROM notifications
+                 WHERE attempts < ?1 AND (
+                     status = 'pending'
+                     OR (status = 'failed' AND next_attempt_at <= ?2)
+                     OR (status = 'in_flight' AND claimed_at <= ?3)
+                 )
+                 ORDER BY id LIMIT 1",
+                params![max_attempts, now_string, stale_before],
+                notification_from_row,
+            )
+            .optional()?;
+        let Some(job) = job else {
+            return Ok(None);
+        };
+        transaction.execute(
+            "UPDATE notifications
+             SET status = 'in_flight', attempts = attempts + 1, claimed_at = ?1
+             WHERE id = ?2",
+            params![now.to_rfc3339(), job.id],
+        )?;
+        transaction.commit()?;
+        Ok(Some(NotificationJob {
+            attempts: job.attempts + 1,
+            status: "in_flight".into(),
+            ..job
+        }))
+    }
+
+    pub fn complete_notification(&self, id: i64, now: DateTime<Utc>) -> Result<()> {
+        let connection = Connection::open(&self.database)?;
+        connection.execute(
+            "UPDATE notifications
+             SET status = 'sent', sent_at = ?1, claimed_at = NULL, last_error = NULL
+             WHERE id = ?2 AND status = 'in_flight'",
+            params![now.to_rfc3339(), id],
+        )?;
+        Ok(())
+    }
+
+    pub fn fail_notification(
+        &self,
+        id: i64,
+        attempts: u32,
+        error: &str,
+        max_attempts: u32,
+        retry_delay_seconds: u64,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let connection = Connection::open(&self.database)?;
+        let status = "failed";
+        let next_attempt_at = if attempts >= max_attempts {
+            now.to_rfc3339()
+        } else {
+            retry_time(now, attempts, retry_delay_seconds)
+        };
+        connection.execute(
+            "UPDATE notifications
+             SET status = ?1, next_attempt_at = ?2, last_error = ?3, claimed_at = NULL
+             WHERE id = ?4 AND status = 'in_flight'",
+            params![status, next_attempt_at, error, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_notifications(&self) -> Result<Vec<NotificationJob>> {
+        let connection = Connection::open(&self.database)?;
+        let mut statement = connection.prepare(
+            "SELECT id, event_id, fingerprint, channel, payload, status, attempts,
+                    next_attempt_at, last_error, sent_at
+             FROM notifications ORDER BY id",
+        )?;
+        let rows = statement.query_map([], notification_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }
 }
 
 fn initialize_database(connection: &Connection) -> Result<()> {
@@ -189,8 +311,47 @@ fn initialize_database(connection: &Connection) -> Result<()> {
              resolved_at TEXT,
              event_count INTEGER NOT NULL,
              last_event_id TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS notifications (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             event_id TEXT NOT NULL,
+             fingerprint TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             payload TEXT NOT NULL,
+             status TEXT NOT NULL,
+             attempts INTEGER NOT NULL DEFAULT 0,
+             next_attempt_at TEXT NOT NULL,
+             last_error TEXT,
+             claimed_at TEXT,
+             sent_at TEXT,
+             UNIQUE(event_id, channel)
          );",
     )?;
+    Ok(())
+}
+
+fn enqueue_notifications(
+    transaction: &Transaction<'_>,
+    event: &Event,
+    alert: &AlertRecord,
+    channels: &[String],
+) -> Result<()> {
+    let payload = render_event(event, alert);
+    let next_attempt_at = Utc::now().to_rfc3339();
+    for channel in channels {
+        transaction.execute(
+            "INSERT OR IGNORE INTO notifications
+             (event_id, fingerprint, channel, payload, status, attempts, next_attempt_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5)",
+            params![
+                event.event_id,
+                event.fingerprint,
+                channel,
+                payload,
+                next_attempt_at
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -345,12 +506,27 @@ fn alert_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AlertRecord> {
     })
 }
 
+fn notification_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NotificationJob> {
+    Ok(NotificationJob {
+        id: row.get(0)?,
+        event_id: row.get(1)?,
+        fingerprint: row.get(2)?,
+        channel: row.get(3)?,
+        payload: row.get(4)?,
+        status: row.get(5)?,
+        attempts: row.get(6)?,
+        next_attempt_at: row.get(7)?,
+        last_error: row.get(8)?,
+        sent_at: row.get(9)?,
+    })
+}
+
 pub async fn serve(args: ServerConfig) -> Result<()> {
     let bind: SocketAddr = args
         .bind
         .parse()
         .with_context(|| format!("invalid server bind address {}", args.bind))?;
-    let router = router(args.data, args.token)?;
+    let router = router_with_policy(args.data, args.token, args.policy)?;
     let listener = TcpListener::bind(bind).await?;
     println!("Beacon server listening on {}", listener.local_addr()?);
     axum::serve(listener, router).await?;
@@ -363,12 +539,16 @@ pub async fn serve_listener(listener: TcpListener, router: Router) -> Result<()>
 }
 
 pub fn router(data: PathBuf, token: String) -> Result<Router> {
+    router_with_policy(data, token, PolicyCatalog::default())
+}
+
+pub fn router_with_policy(data: PathBuf, token: String, policy: PolicyCatalog) -> Result<Router> {
     if token.trim().is_empty() {
         bail!("server token cannot be empty");
     }
     Ok(build_router(ServerState {
         token: Arc::new(token),
-        events: Arc::new(ServerEventStore::open(data)?),
+        events: Arc::new(ServerEventStore::open_with_policy(data, policy)?),
     }))
 }
 

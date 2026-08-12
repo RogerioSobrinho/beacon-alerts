@@ -73,3 +73,18 @@ event count. The matching resolved event must use the same fingerprint as the
 firing event. `GET /v1/alerts` accepts `status=firing`, `status=resolved`, or
 `status=info`, plus a bounded `limit` query parameter. Acknowledgement,
 silencing, maintenance, and suppression are not implemented yet.
+
+## Policy Catalog
+
+The server optionally reads a JSON policy catalog with `--policy-file`. Each
+rule may match `event_type`, `source`, `host_id`, `state`, and `severity`, and
+must name one or more channels. Matching rules are combined and duplicate
+channel names are removed. Disabled rules are ignored. See
+`docs/policy.example.json`.
+
+For each accepted event and matching channel, the server creates one durable
+notification job in the same SQLite transaction as the event and alert. Jobs
+use the unique key `(event_id, channel)`, so event retries cannot enqueue a
+duplicate. Delivery states are `pending`, `in_flight`, `sent`, and `failed`.
+Failed jobs receive exponential retry timestamps and stale `in_flight` jobs
+can be reclaimed after a process crash.

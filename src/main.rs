@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use beacon_alerts::agent::{drain, AgentConfig};
 use beacon_alerts::model::{Event, EventState, Severity};
+use beacon_alerts::policy::PolicyCatalog;
 use beacon_alerts::server::{serve, ServerConfig};
 use beacon_alerts::spool::Spool;
 use chrono::{SecondsFormat, Utc};
@@ -47,6 +48,9 @@ struct ServerArgs {
     /// File containing the bearer token required by the event intake endpoint.
     #[arg(long, default_value = "/etc/beacon/server.token")]
     token_file: PathBuf,
+    /// JSON file containing event-to-channel notification policies.
+    #[arg(long)]
+    policy_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -110,6 +114,7 @@ async fn main() -> Result<()> {
                 bind: args.bind,
                 data: args.data,
                 token: read_token(&args.token_file)?,
+                policy: read_policy(args.policy_file.as_deref())?,
             })
             .await?;
         }
@@ -139,6 +144,19 @@ fn read_token(path: &std::path::Path) -> Result<String> {
         anyhow::bail!("token file {} is empty", path.display());
     }
     Ok(token)
+}
+
+fn read_policy(path: Option<&std::path::Path>) -> Result<PolicyCatalog> {
+    let Some(path) = path else {
+        return Ok(PolicyCatalog::default());
+    };
+    let policy: PolicyCatalog = serde_json::from_str(
+        &fs::read_to_string(path)
+            .with_context(|| format!("read policy file {}", path.display()))?,
+    )
+    .with_context(|| format!("parse policy file {}", path.display()))?;
+    policy.validate()?;
+    Ok(policy)
 }
 
 fn send_event(args: SendArgs) -> Result<()> {
