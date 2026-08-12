@@ -98,10 +98,10 @@ Git checkout.
 Set `/opt/beacon/.env` to an immutable digest selected for the deployment:
 
 ```dotenv
-BEACON_IMAGE_REF=ghcr.io/rogeriosobrinho/beacon-alerts@sha256:341aa4964c77ea86cd11c5cc31f203df1445c3a1144981411719ff89d0ff7f42
+BEACON_IMAGE_REF=ghcr.io/rogeriosobrinho/beacon-alerts@sha256:3ab439d5497d69852aaf41594e84dbede1437aea388a5d60c456d97000c3ea20
 ```
 
-The example digest is the published `v0.1.0-rc2` image. Replace it only after
+The example digest is the published `v0.1.0-rc3` image. Replace it only after
 reviewing a later release. Do not use `latest`.
 
 ## Policy File
