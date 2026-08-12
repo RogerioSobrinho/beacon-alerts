@@ -17,8 +17,10 @@ local detectors -> beacon agent -> beacon server -> notification channels
 ## Status
 
 This repository is an early bootstrap. The CLI shape and event contract are
-provisional. Server networking, durable persistence, authentication, local
-spooling, policy evaluation, and Telegram delivery are not implemented yet.
+provisional. The current stage implements authenticated HTTP intake, atomic
+server-side event persistence, local spooling, and one-shot agent delivery.
+Alert lifecycle, policy evaluation, and Telegram delivery are not implemented
+yet.
 
 ## Bootstrap
 
@@ -32,7 +34,18 @@ beacon replay
 ```
 
 The current `send` command renders and durably queues a normalized event in an
-atomic local JSON spool. It does not send anything over the network yet.
+atomic local JSON spool. `agent` drains that spool to the authenticated server
+and removes an event only after a successful server response.
+
+```text
+beacon server --token-file /path/to/server.token --data /var/lib/beacon/events
+beacon agent --token-file /path/to/agent.token --spool /var/lib/beacon/spool
+```
+
+The transport bootstrap uses one bearer token per running server. This is not
+the final production credential model: per-agent credentials, rotation, TLS,
+and authorization scopes are required before deployment outside a controlled
+trusted network.
 
 ## Design Principles
 

@@ -11,6 +11,10 @@ operational constraints.
 - Do not grant Docker socket access.
 - Keep the server reachable only from approved agent hosts.
 - Store PostgreSQL and channel secrets outside the repository.
+- Store server and agent transport tokens in root-owned files with restrictive
+  permissions; do not pass them on the command line.
+- Do not expose the bootstrap HTTP endpoint beyond the trusted management
+  network. It has no TLS or per-agent authorization yet.
 
 ## Validation Before Production
 
@@ -22,3 +26,5 @@ operational constraints.
 - invalid and sensitive payloads are rejected;
 - PostgreSQL backup and restore are tested;
 - rollback to the previous emitter works for each migrated source.
+- two Beacon processes cannot use the same spool or server data directory at
+  the same time.

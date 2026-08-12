@@ -1,12 +1,16 @@
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use chrono::{DateTime, SecondsFormat, Utc};
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result};
+use beacon_alerts::agent::{drain, AgentConfig};
+use beacon_alerts::model::{Event, EventState, Severity};
+use beacon_alerts::server::{serve, ServerConfig};
+use beacon_alerts::spool::Spool;
+use chrono::{SecondsFormat, Utc};
+use clap::{Args, Parser, Subcommand};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -24,9 +28,9 @@ struct Cli {
 enum Command {
     /// Start the central event server.
     Server(ServerArgs),
-    /// Start a local agent with a durable event spool.
+    /// Deliver queued events to the central server.
     Agent(AgentArgs),
-    /// Create and inspect a normalized event payload.
+    /// Create and queue a normalized event payload.
     Send(SendArgs),
     /// Inspect events waiting in a local spool.
     Replay(ReplayArgs),
@@ -34,9 +38,15 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct ServerArgs {
-    /// Listen address. Networking is intentionally not implemented in the bootstrap.
+    /// Listen address.
     #[arg(long, default_value = "127.0.0.1:8787")]
     bind: String,
+    /// Directory where accepted events are durably stored.
+    #[arg(long, default_value = "/var/lib/beacon/events")]
+    data: PathBuf,
+    /// File containing the bearer token required by the event intake endpoint.
+    #[arg(long, default_value = "/etc/beacon/server.token")]
+    token_file: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -47,6 +57,18 @@ struct AgentArgs {
     /// Local durable spool directory.
     #[arg(long, default_value = "/var/lib/beacon/spool")]
     spool: PathBuf,
+    /// File containing the bearer token used to authenticate to the server.
+    #[arg(long, default_value = "/etc/beacon/agent.token")]
+    token_file: PathBuf,
+    /// Maximum number of events to attempt in this run.
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+    /// Maximum attempts per event, including the first submission.
+    #[arg(long, default_value_t = 3)]
+    max_attempts: usize,
+    /// Delay between failed attempts.
+    #[arg(long, default_value_t = 2)]
+    retry_delay_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -80,169 +102,43 @@ struct ReplayArgs {
     spool: PathBuf,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-enum EventState {
-    Firing,
-    Resolved,
-    Info,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-enum Severity {
-    Critical,
-    Warning,
-    Info,
-}
-
-impl EventState {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Firing => "firing",
-            Self::Resolved => "resolved",
-            Self::Info => "info",
-        }
-    }
-}
-
-impl Severity {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Critical => "critical",
-            Self::Warning => "warning",
-            Self::Info => "info",
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Event {
-    schema_version: u16,
-    event_id: String,
-    event_type: String,
-    source: String,
-    host_id: String,
-    state: EventState,
-    severity: Severity,
-    fingerprint: String,
-    occurred_at: String,
-    facts: BTreeMap<String, serde_json::Value>,
-}
-
-impl Event {
-    fn validate(&self) -> Result<()> {
-        if self.schema_version != 1 {
-            bail!("unsupported event schema version: {}", self.schema_version);
-        }
-        require_field("event_id", &self.event_id, 128)?;
-        Uuid::parse_str(&self.event_id).context("event_id must be a UUID")?;
-        require_field("event_type", &self.event_type, 128)?;
-        require_field("source", &self.source, 128)?;
-        require_field("host_id", &self.host_id, 128)?;
-        require_field("fingerprint", &self.fingerprint, 256)?;
-        require_field("occurred_at", &self.occurred_at, 64)?;
-        DateTime::parse_from_rfc3339(&self.occurred_at).context("occurred_at must be RFC3339")?;
-        if self.facts.len() > 32 {
-            bail!("facts cannot contain more than 32 fields");
-        }
-        for (key, value) in &self.facts {
-            require_field("fact key", key, 64)?;
-            if serde_json::to_vec(value)?.len() > 4096 {
-                bail!("fact '{key}' exceeds the 4096-byte value limit");
-            }
-        }
-        Ok(())
-    }
-}
-
-fn require_field(name: &str, value: &str, max_bytes: usize) -> Result<()> {
-    if value.trim().is_empty() {
-        bail!("{name} cannot be empty");
-    }
-    if value.len() > max_bytes {
-        bail!("{name} exceeds the {max_bytes}-byte limit");
-    }
-    Ok(())
-}
-
-struct Spool {
-    pending: PathBuf,
-}
-
-impl Spool {
-    fn open(root: PathBuf) -> Result<Self> {
-        let pending = root.join("pending");
-        fs::create_dir_all(&pending)
-            .with_context(|| format!("create spool directory {}", pending.display()))?;
-        Ok(Self { pending })
-    }
-
-    fn enqueue(&self, event: &Event) -> Result<PathBuf> {
-        event.validate()?;
-        let filename = format!("{}.json", event.event_id);
-        let destination = self.pending.join(filename);
-        if destination.exists() {
-            bail!("event {} is already queued", event.event_id);
-        }
-        let temporary = self.pending.join(format!(".{}.tmp", event.event_id));
-        let encoded = serde_json::to_vec_pretty(event)?;
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)
-            .with_context(|| format!("create temporary spool file {}", temporary.display()))?;
-        file.write_all(&encoded)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, &destination)
-            .with_context(|| format!("commit event {} to spool", event.event_id))?;
-        Ok(destination)
-    }
-
-    fn list(&self) -> Result<Vec<Event>> {
-        let mut paths = fs::read_dir(&self.pending)?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
-            .collect::<Vec<_>>();
-        paths.sort();
-
-        paths
-            .into_iter()
-            .map(|path| {
-                let event: Event = serde_json::from_reader(
-                    File::open(&path).with_context(|| format!("open {}", path.display()))?,
-                )
-                .with_context(|| format!("decode {}", path.display()))?;
-                event.validate()?;
-                Ok(event)
-            })
-            .collect()
-    }
-}
-
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Server(args) => {
-            println!("Beacon server bootstrap; bind={}", args.bind);
-            println!(
-                "Networking, persistence, authentication, and delivery are not implemented yet."
-            );
+            serve(ServerConfig {
+                bind: args.bind,
+                data: args.data,
+                token: read_token(&args.token_file)?,
+            })
+            .await?;
         }
         Command::Agent(args) => {
-            println!(
-                "Beacon agent bootstrap; server={}; spool={}",
-                args.server,
-                args.spool.display()
-            );
-            println!("Local durable spool and authenticated transport are not implemented yet.");
+            let delivered = drain(AgentConfig {
+                server: args.server,
+                spool: args.spool,
+                token: read_token(&args.token_file)?,
+                limit: args.limit,
+                max_attempts: args.max_attempts,
+                retry_delay_seconds: args.retry_delay_seconds,
+            })
+            .await?;
+            println!("delivered {delivered} event(s)");
         }
         Command::Send(args) => send_event(args)?,
         Command::Replay(args) => replay_events(args)?,
     }
-
     Ok(())
+}
+
+fn read_token(path: &std::path::Path) -> Result<String> {
+    let token =
+        fs::read_to_string(path).with_context(|| format!("read token file {}", path.display()))?;
+    let token = token.trim().to_owned();
+    if token.is_empty() {
+        anyhow::bail!("token file {} is empty", path.display());
+    }
+    Ok(token)
 }
 
 fn send_event(args: SendArgs) -> Result<()> {
@@ -284,61 +180,4 @@ fn replay_events(args: ReplayArgs) -> Result<()> {
         );
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn test_event() -> Event {
-        Event {
-            schema_version: 1,
-            event_id: Uuid::new_v4().to_string(),
-            event_type: "backup.restic.stale".into(),
-            source: "test".into(),
-            host_id: "backup".into(),
-            state: EventState::Firing,
-            severity: Severity::Critical,
-            fingerprint: "backup/restic/age".into(),
-            occurred_at: "2026-01-01T00:00:00Z".into(),
-            facts: BTreeMap::from([("age_hours".into(), serde_json::json!(41))]),
-        }
-    }
-
-    #[test]
-    fn event_round_trips_and_validates() {
-        let event = test_event();
-        let encoded = serde_json::to_string(&event).unwrap();
-        let decoded: Event = serde_json::from_str(&encoded).unwrap();
-        decoded.validate().unwrap();
-    }
-
-    #[test]
-    fn spool_writes_and_lists_events() {
-        let root = std::env::temp_dir().join(format!("beacon-test-{}", Uuid::new_v4()));
-        let spool = Spool::open(root.clone()).unwrap();
-        let event = test_event();
-        let path = spool.enqueue(&event).unwrap();
-        assert!(path.exists());
-        assert_eq!(spool.list().unwrap().len(), 1);
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn invalid_schema_is_rejected() {
-        let mut event = test_event();
-        event.schema_version = 2;
-        assert!(event.validate().is_err());
-    }
-
-    #[test]
-    fn invalid_identity_and_timestamp_are_rejected() {
-        let mut event = test_event();
-        event.event_id = "../../outside-spool".into();
-        assert!(event.validate().is_err());
-
-        let mut event = test_event();
-        event.occurred_at = "not-a-timestamp".into();
-        assert!(event.validate().is_err());
-    }
 }

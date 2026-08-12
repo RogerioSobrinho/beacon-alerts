@@ -16,6 +16,9 @@ administration plane.
 - The server binds only to an explicitly configured interface.
 - Channel credentials are stored only on the server through a secret mechanism.
 - Logs contain event identifiers and delivery status, not raw payloads.
+- Transport credentials are read from files rather than command-line arguments.
+- The bootstrap uses a single bearer token and plain HTTP; it is intended only
+  for a controlled trusted network until per-agent credentials and TLS exist.
 
 ## Threats to Test
 

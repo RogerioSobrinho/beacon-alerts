@@ -35,6 +35,10 @@ Beacon does not collect metrics or execute remote commands.
 6. A notification worker renders and delivers channel messages.
 7. Delivery results remain durable and are retried without creating a new alert.
 
+The current implementation covers steps 1 through 4 with a local JSON spool and
+an authenticated HTTP intake endpoint. Alert state, notification workers, and
+channel delivery are subsequent stages.
+
 ## Initial Persistence
 
 - Server: PostgreSQL for event, alert, notification, client, and policy state.
