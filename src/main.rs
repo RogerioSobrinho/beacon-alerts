@@ -56,12 +56,21 @@ struct ServerArgs {
     /// JSON file containing event-to-channel notification policies.
     #[arg(long)]
     policy_file: Option<PathBuf>,
+    /// PEM certificate chain for the HTTPS listener.
+    #[arg(long)]
+    tls_cert: Option<PathBuf>,
+    /// PEM private key for the HTTPS listener.
+    #[arg(long)]
+    tls_key: Option<PathBuf>,
+    /// Permit plain HTTP for local development only.
+    #[arg(long)]
+    allow_http: bool,
 }
 
 #[derive(Debug, Args)]
 struct AgentArgs {
     /// Beacon server endpoint.
-    #[arg(long, default_value = "http://127.0.0.1:8787")]
+    #[arg(long, default_value = "https://127.0.0.1:8787")]
     server: String,
     /// Local durable spool directory.
     #[arg(long, default_value = "/var/lib/beacon/spool")]
@@ -69,6 +78,12 @@ struct AgentArgs {
     /// File containing the bearer token used to authenticate to the server.
     #[arg(long, default_value = "/etc/beacon/agent.token")]
     token_file: PathBuf,
+    /// PEM CA certificate used to verify the Beacon server.
+    #[arg(long)]
+    ca_file: Option<PathBuf>,
+    /// Permit plain HTTP for local development only.
+    #[arg(long)]
+    allow_http: bool,
     /// Maximum number of events to attempt in this run.
     #[arg(long, default_value_t = 100)]
     limit: usize,
@@ -139,6 +154,9 @@ async fn main() -> Result<()> {
                 data: args.data,
                 credentials_dir: args.credentials_dir,
                 policy: read_policy(args.policy_file.as_deref())?,
+                tls_cert: args.tls_cert,
+                tls_key: args.tls_key,
+                allow_http: args.allow_http,
             })
             .await?;
         }
@@ -147,6 +165,8 @@ async fn main() -> Result<()> {
                 server: args.server,
                 spool: args.spool,
                 token: read_token(&args.token_file)?,
+                ca_file: args.ca_file,
+                allow_http: args.allow_http,
                 limit: args.limit,
                 max_attempts: args.max_attempts,
                 retry_delay_seconds: args.retry_delay_seconds,

@@ -41,8 +41,11 @@ atomic local JSON spool. `agent` drains that spool to the authenticated server
 and removes an event only after a successful server response.
 
 ```text
-beacon server --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events
-beacon agent --token-file /path/to/agent.token --spool /var/lib/beacon/spool
+beacon server --credentials-dir /etc/beacon/agents.d --data /var/lib/beacon/events \
+  --tls-cert /etc/beacon/tls/server.crt --tls-key /etc/beacon/tls/server.key
+beacon agent --server https://beacon.example.internal:8787 \
+  --ca-file /etc/beacon/tls/ca.crt --token-file /path/to/agent.token \
+  --spool /var/lib/beacon/spool
 beacon server --policy-file /etc/beacon/policy.json
 beacon notify --data /var/lib/beacon/events --telegram-config /etc/beacon/telegram.json
 ```
@@ -51,6 +54,11 @@ The server accepts one bearer token file per agent in `--credentials-dir`.
 Adding, replacing, or removing a file rotates or revokes that agent without a
 server restart. TLS and authorization scopes remain required before deployment
 outside a controlled trusted network.
+
+TLS certificate issuance and renewal belong to the deployment infrastructure.
+Beacon reads the certificate, private key, and CA files but does not create or
+renew them. Plain HTTP requires `--allow-http` on both server and agent and is
+intended only for local development.
 
 ## Design Principles
 
@@ -82,6 +90,7 @@ outside a controlled trusted network.
 - [Event protocol](docs/protocol.md)
 - [Security model](docs/security.md)
 - [Operations](docs/operations.md)
+- [Systemd and TLS](docs/systemd.md)
 
 ## License
 

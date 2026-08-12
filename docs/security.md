@@ -21,8 +21,11 @@ administration plane.
 - Telegram tokens are read from a separate restricted file; Telegram config
   contains only the token-file path and chat identifier.
 - Telegram delivery uses HTTPS, a bounded timeout, and never logs the bot token.
-- The bootstrap uses per-agent bearer files but plain HTTP; it is intended only
-  for a controlled trusted network until TLS exists.
+- The bootstrap uses per-agent bearer files and requires HTTPS by default.
+- Production transport uses server certificate/key files and CA validation by
+  agents; HTTP is only a local-development escape hatch.
+- Certificate issuance, renewal, permissions, and private-key custody belong
+  to the deployment infrastructure, not the Beacon process.
 
 ## Threats to Test
 

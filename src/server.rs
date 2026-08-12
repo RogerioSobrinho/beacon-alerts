@@ -27,6 +27,9 @@ pub struct ServerConfig {
     pub data: PathBuf,
     pub credentials_dir: PathBuf,
     pub policy: PolicyCatalog,
+    pub tls_cert: Option<PathBuf>,
+    pub tls_key: Option<PathBuf>,
+    pub allow_http: bool,
 }
 
 #[derive(Clone)]
@@ -585,9 +588,27 @@ pub async fn serve(args: ServerConfig) -> Result<()> {
         .parse()
         .with_context(|| format!("invalid server bind address {}", args.bind))?;
     let router = router_with_credentials(args.data, args.credentials_dir, args.policy)?;
-    let listener = TcpListener::bind(bind).await?;
-    println!("Beacon server listening on {}", listener.local_addr()?);
-    axum::serve(listener, router).await?;
+    match (args.tls_cert, args.tls_key) {
+        (Some(cert), Some(key)) => {
+            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+            println!("Beacon server listening with TLS on {bind}");
+            axum_server::bind_rustls(bind, config)
+                .serve(router.into_make_service())
+                .await?;
+        }
+        (None, None) => {
+            if !args.allow_http {
+                bail!("Beacon server requires TLS; use --allow-http only for local development");
+            }
+            let listener = TcpListener::bind(bind).await?;
+            println!(
+                "Beacon server listening without TLS on {}",
+                listener.local_addr()?
+            );
+            axum::serve(listener, router).await?;
+        }
+        _ => bail!("tls_cert and tls_key must be configured together"),
+    }
     Ok(())
 }
 

@@ -102,3 +102,10 @@ Beacon writes operational logs to stdout/stderr for systemd-journald. The
 `journal-upload` workflow may forward those logs to VictoriaLogs. Beacon does
 not send alert records directly to VictoriaLogs. A separate detector may query
 VictoriaLogs and submit a normalized event to Beacon.
+
+## TLS Transport
+
+The server accepts `--tls-cert` and `--tls-key` PEM files as a pair. Agents use
+`--ca-file` to validate the server certificate and must use an `https://` URL.
+Hostname verification remains enabled by the HTTP client. `--allow-http` is
+available only as an explicit local-development override.

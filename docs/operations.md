@@ -17,8 +17,11 @@ operational constraints.
 - Store each agent transport token as a separate root-owned file in the server
   credentials directory with restrictive permissions; do not pass tokens on the
   command line.
-- Do not expose the bootstrap HTTP endpoint beyond the trusted management
-  network. It has no TLS yet.
+- Do not expose the service beyond the trusted management network, even with
+  TLS, until the deployment has been validated.
+- For non-development operation, configure both server TLS files and the agent
+  CA file; never use `--allow-http`.
+- Keep the TLS private key readable only by the Beacon server service account.
 - Send Beacon stdout/stderr to journald and let `journal-upload` handle
   forwarding to VictoriaLogs; do not add a direct VictoriaLogs client.
 
@@ -40,3 +43,7 @@ operational constraints.
 - rollback to the previous emitter works for each migrated source.
 - two Beacon processes cannot use the same spool or server data directory at
   the same time.
+- certificate renewal is tested by replacing the files and restarting the
+  service with a rollback copy available;
+- SQLite backup is restored to an isolated directory and notification jobs are
+  inspected before returning the service to production.
