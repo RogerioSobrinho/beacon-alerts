@@ -65,6 +65,21 @@ struct ServerArgs {
     /// Permit plain HTTP for local development only.
     #[arg(long)]
     allow_http: bool,
+    /// JSON file enabling the in-process Telegram notification worker.
+    #[arg(long)]
+    telegram_config: Option<PathBuf>,
+    /// Seconds between notification queue scans.
+    #[arg(long, default_value_t = 30)]
+    notify_interval_seconds: u64,
+    /// Maximum jobs delivered per queue scan.
+    #[arg(long, default_value_t = 100)]
+    notify_limit: usize,
+    /// Maximum delivery attempts per notification job.
+    #[arg(long, default_value_t = 3)]
+    notify_max_attempts: u32,
+    /// Base retry delay in seconds.
+    #[arg(long, default_value_t = 30)]
+    notify_retry_delay_seconds: u64,
 }
 
 #[derive(Debug, Args)]
@@ -157,6 +172,11 @@ async fn main() -> Result<()> {
                 tls_cert: args.tls_cert,
                 tls_key: args.tls_key,
                 allow_http: args.allow_http,
+                telegram_config: args.telegram_config,
+                notify_interval_seconds: args.notify_interval_seconds,
+                notify_limit: args.notify_limit,
+                notify_max_attempts: args.notify_max_attempts,
+                notify_retry_delay_seconds: args.notify_retry_delay_seconds,
             })
             .await?;
         }

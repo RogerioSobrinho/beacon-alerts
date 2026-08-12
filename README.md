@@ -91,6 +91,7 @@ intended only for local development.
 - [Security model](docs/security.md)
 - [Operations](docs/operations.md)
 - [Systemd and TLS](docs/systemd.md)
+- [Container deployment](docs/container.md)
 
 ## License
 

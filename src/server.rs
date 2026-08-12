@@ -18,7 +18,10 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 
 use crate::model::{AlertRecord, AlertStatus, Event, EventState};
-use crate::notification::{render_event, retry_time};
+use crate::notification::{
+    render_event, retry_time, NotificationChannel, NotificationDispatcher, TelegramChannel,
+    TelegramConfig,
+};
 use crate::policy::PolicyCatalog;
 
 #[derive(Debug)]
@@ -30,6 +33,11 @@ pub struct ServerConfig {
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub allow_http: bool,
+    pub telegram_config: Option<PathBuf>,
+    pub notify_interval_seconds: u64,
+    pub notify_limit: usize,
+    pub notify_max_attempts: u32,
+    pub notify_retry_delay_seconds: u64,
 }
 
 #[derive(Clone)]
@@ -587,7 +595,24 @@ pub async fn serve(args: ServerConfig) -> Result<()> {
         .bind
         .parse()
         .with_context(|| format!("invalid server bind address {}", args.bind))?;
-    let router = router_with_credentials(args.data, args.credentials_dir, args.policy)?;
+    let state = server_state(args.data, args.credentials_dir, args.policy)?;
+    if let Some(config_path) = args.telegram_config {
+        let channel: Arc<dyn NotificationChannel> = Arc::new(TelegramChannel::from_config(
+            TelegramConfig::load(&config_path)?,
+        )?);
+        let dispatcher = Arc::new(NotificationDispatcher::new(
+            vec![channel],
+            args.notify_max_attempts,
+            args.notify_retry_delay_seconds,
+        )?);
+        spawn_notification_worker(
+            state.events.clone(),
+            dispatcher,
+            args.notify_interval_seconds,
+            args.notify_limit,
+        )?;
+    }
+    let router = build_router(state);
     match (args.tls_cert, args.tls_key) {
         (Some(cert), Some(key)) => {
             let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
@@ -626,10 +651,42 @@ pub fn router_with_credentials(
     credentials_dir: PathBuf,
     policy: PolicyCatalog,
 ) -> Result<Router> {
-    Ok(build_router(ServerState {
+    Ok(build_router(server_state(data, credentials_dir, policy)?))
+}
+
+fn server_state(
+    data: PathBuf,
+    credentials_dir: PathBuf,
+    policy: PolicyCatalog,
+) -> Result<ServerState> {
+    Ok(ServerState {
         credentials: Arc::new(CredentialStore::new(credentials_dir)?),
         events: Arc::new(ServerEventStore::open_with_policy(data, policy)?),
-    }))
+    })
+}
+
+fn spawn_notification_worker(
+    events: Arc<ServerEventStore>,
+    dispatcher: Arc<NotificationDispatcher>,
+    interval_seconds: u64,
+    limit: usize,
+) -> Result<()> {
+    if interval_seconds == 0 {
+        bail!("notify interval must be greater than zero");
+    }
+    if limit == 0 {
+        bail!("notify limit must be greater than zero");
+    }
+    std::thread::Builder::new()
+        .name("beacon-notify".into())
+        .spawn(move || loop {
+            if let Err(error) = dispatcher.deliver_due(&events, limit) {
+                eprintln!("beacon notification worker error: {error:#}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(interval_seconds));
+        })
+        .context("start notification worker")?;
+    Ok(())
 }
 
 fn build_router(state: ServerState) -> Router {

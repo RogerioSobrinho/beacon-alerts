@@ -1,0 +1,10 @@
+.git
+.github
+target
+.env
+*.token
+*.key
+*.crt
+*.pem
+Dockerfile
+compose.yaml

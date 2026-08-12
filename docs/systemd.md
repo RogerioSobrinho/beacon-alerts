@@ -1,35 +1,34 @@
 # Systemd and TLS
 
-Beacon is not installed by this repository. The following is the intended
-shape for a deployment managed by systemd; adapt paths, user names, and hardening
-to the target host after reviewing the live system.
+Beacon agents are intended to run as native systemd services on event-producing
+VMs. The central server is packaged as a container; see
+`docs/container.md`. Adapt paths, user names, and hardening to the target host
+after reviewing the live system.
 
-## Server
+## Agent
 
 ```ini
 [Unit]
-Description=Beacon alert server
+Description=Beacon event agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=beacon
 Group=beacon
-ExecStart=/usr/local/bin/beacon server \
-  --bind 0.0.0.0:8787 \
-  --data /var/lib/beacon/events \
-  --credentials-dir /etc/beacon/agents.d \
-  --policy-file /etc/beacon/policy.json \
-  --tls-cert /etc/beacon/tls/server.crt \
-  --tls-key /etc/beacon/tls/server.key
+ExecStart=/usr/local/bin/beacon agent \
+  --server http://192.168.68.62:8787 \
+  --allow-http \
+  --spool /var/lib/beacon/spool \
+  --token-file /etc/beacon/agent.token
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/beacon/events
-ReadOnlyPaths=/etc/beacon/agents.d /etc/beacon/policy.json /etc/beacon/tls
+ReadWritePaths=/var/lib/beacon/spool
+ReadOnlyPaths=/etc/beacon/agent.token
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,40 @@
+services:
+  beacon:
+    image: ${BEACON_IMAGE_REF:?set BEACON_IMAGE_REF}
+    restart: unless-stopped
+    command:
+      - server
+      - --bind
+      - 0.0.0.0:8787
+      - --data
+      - /var/lib/beacon/events
+      - --credentials-dir
+      - /etc/beacon/agents.d
+      - --policy-file
+      - /etc/beacon/policy.json
+      - --allow-http
+      - --telegram-config
+      - /etc/beacon/telegram.json
+      - --notify-interval-seconds
+      - "30"
+      - --notify-limit
+      - "100"
+      - --notify-max-attempts
+      - "3"
+      - --notify-retry-delay-seconds
+      - "30"
+    ports:
+      - "192.168.68.62:8787:8787"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/lib/beacon/events:/var/lib/beacon/events:rw
+      - /etc/beacon/agents.d:/etc/beacon/agents.d:ro
+      - /etc/beacon/policy.json:/etc/beacon/policy.json:ro
+      - /etc/beacon/telegram.json:/etc/beacon/telegram.json:ro
+      - /etc/beacon/telegram.token:/etc/beacon/telegram.token:ro
