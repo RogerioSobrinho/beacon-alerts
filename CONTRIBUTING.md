@@ -10,3 +10,12 @@ Before opening a pull request:
 - do not include secrets or private infrastructure details;
 - document compatibility impact;
 - run formatting, lint, and tests locally when the Rust toolchain is available.
+
+The CI gate runs the following commands:
+
+```sh
+cargo fmt --all -- --check
+cargo check --all-targets --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+```
