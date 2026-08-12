@@ -51,6 +51,10 @@ server stores its SQLite state in `/var/lib/beacon/events`; agent credentials
 are files under `/etc/beacon/agents.d`; policy and Telegram configuration live
 under `/etc/beacon`. Never commit these paths' secrets.
 
+GitHub Releases publish `beacon-agent` assets for Linux x86_64, macOS x86_64,
+macOS arm64, and Windows x86_64. The `beacon-server` is published only as the
+versioned GHCR container image.
+
 ```sh
 cp .env.example /opt/beacon/.env
 # Edit BEACON_IMAGE_REF to the reviewed image digest.

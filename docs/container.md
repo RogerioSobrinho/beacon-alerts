@@ -6,10 +6,15 @@ without Docker socket access.
 
 ## Build And Publish
 
-The `image.yml` workflow publishes only versioned tags such as `v0.1.0-rc2` to
+The `image.yml` workflow publishes only versioned tags such as `v0.1.0-rc3` to
 GHCR. It does not publish `latest`. The Compose file consumes the full image
 reference through `BEACON_IMAGE_REF`; production should set this to the
 resulting image digest, not a moving tag.
+
+The `release-agent.yml` workflow publishes only the native `beacon-agent` as
+GitHub Release assets for Linux x86_64, macOS x86_64, macOS arm64, and Windows
+x86_64. The `beacon-server` is not published as a native asset; it remains the
+GHCR container used by Ops.
 
 The complete user configuration procedure is in `docs/configuration.md`.
 

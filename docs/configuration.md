@@ -44,10 +44,9 @@ Agent host:
 - a token file readable only by the agent service;
 - network access to the server address.
 
-The current release publishes the server image to GHCR. Native agent binaries
-are not published as release assets yet; build the same tagged source release
-with `cargo build --release --locked` or package the binary through your own
-trusted build pipeline.
+The current release publishes the server image to GHCR and publishes native
+`beacon-agent` assets on the GitHub Release. Select the asset matching the
+producer host architecture. The `beacon-server` remains container-only.
 
 ## Server Layout
 
