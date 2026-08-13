@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-rc5
+
+- Improved Telegram alerts with a compact human-readable layout and allowlisted
+  event descriptions that do not expose raw facts, fingerprints, or event types.
+
 ## 0.1.0-rc4
 
 - Added reviewed idempotent installers for the server and native agent.

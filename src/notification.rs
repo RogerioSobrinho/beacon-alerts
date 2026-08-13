@@ -7,7 +7,7 @@ use reqwest::blocking::Client;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::model::{AlertRecord, Event};
+use crate::model::{AlertRecord, AlertStatus, Event, Severity};
 use crate::server::{NotificationFailureUpdate, NotificationJob, ServerEventStore};
 
 pub trait NotificationChannel: Send + Sync {
@@ -202,14 +202,79 @@ impl NotificationDispatcher {
 }
 
 pub fn render_event(event: &Event, alert: &AlertRecord) -> String {
+    let host = human_host(&event.host_id);
+    let severity = human_severity(&alert.severity);
+    let (icon, status, detail, action) = match (
+        event.event_type.as_str(),
+        &alert.status,
+        event.host_id.as_str(),
+    ) {
+        ("storage.mount.missing", AlertStatus::Firing, "media") => (
+            "🚨",
+            "ALERTA ATIVO",
+            "O armazenamento de mídia não está montado.",
+            "Verificar o storage da Media.",
+        ),
+        ("storage.mount.missing", AlertStatus::Resolved, "media") => (
+            "✅",
+            "ALERTA RESOLVIDO",
+            "O armazenamento de mídia voltou a ficar disponível.",
+            "Nenhuma ação imediata; confirmar a operação normal.",
+        ),
+        ("backup.restic.stale", AlertStatus::Firing, _) => (
+            "🚨",
+            "ALERTA ATIVO",
+            "A idade do backup ultrapassou o limite operacional.",
+            "Verificar o último backup e o mount de destino.",
+        ),
+        ("backup.restic.stale", AlertStatus::Resolved, _) => (
+            "✅",
+            "ALERTA RESOLVIDO",
+            "A idade do backup voltou ao limite operacional.",
+            "Nenhuma ação imediata; confirmar o próximo ciclo.",
+        ),
+        (_, AlertStatus::Firing, _) => (
+            "⚠️",
+            "ALERTA ATIVO",
+            "Uma condição monitorada requer atenção.",
+            "Verificar o monitor correspondente.",
+        ),
+        (_, AlertStatus::Resolved, _) => (
+            "✅",
+            "ALERTA RESOLVIDO",
+            "A condição monitorada foi normalizada.",
+            "Nenhuma ação imediata.",
+        ),
+        (_, AlertStatus::Info, _) => (
+            "ℹ️",
+            "INFORMAÇÃO",
+            "Um evento operacional foi registrado.",
+            "Nenhuma ação imediata.",
+        ),
+    };
+
     format!(
-        "{} {} on {}: {} ({})",
-        alert.severity.as_str(),
-        alert.status.as_str(),
-        event.host_id,
-        event.event_type,
-        event.fingerprint
+        "{icon} {status}\n{host} | Infraestrutura\n\n{detail}\n\nAção: {action}\nSeveridade: {severity}"
     )
+}
+
+fn human_host(host: &str) -> &'static str {
+    match host {
+        "media" => "Media",
+        "ops" => "Ops",
+        "backup" => "Backup",
+        "pve" => "PVE",
+        "private-cloud" => "Private Cloud",
+        _ => "Infraestrutura",
+    }
+}
+
+fn human_severity(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "CRÍTICA",
+        Severity::Warning => "ATENÇÃO",
+        Severity::Info => "INFORMAÇÃO",
+    }
 }
 
 pub(crate) fn retry_time(now: DateTime<Utc>, attempts: u32, base_seconds: u64) -> String {
@@ -317,6 +382,63 @@ mod tests {
         let first = retry_time(now, 1, 2);
         let second = retry_time(now, 2, 2);
         assert!(second > first);
+    }
+
+    #[test]
+    fn renders_storage_alert_without_internal_event_data() {
+        let mut event = event();
+        event.event_type = "storage.mount.missing".into();
+        event.host_id = "media".into();
+        event.facts = BTreeMap::from([
+            ("mountpoint".into(), serde_json::json!("/private/secret")),
+            ("token".into(), serde_json::json!("must-not-appear")),
+        ]);
+        let alert = AlertRecord {
+            fingerprint: "media/storage/mount".into(),
+            status: AlertStatus::Firing,
+            severity: Severity::Critical,
+            event_type: event.event_type.clone(),
+            source: event.source.clone(),
+            host_id: event.host_id.clone(),
+            opened_at: event.occurred_at.clone(),
+            last_seen: event.occurred_at.clone(),
+            resolved_at: None,
+            event_count: 1,
+            last_event_id: event.event_id.clone(),
+        };
+
+        let message = render_event(&event, &alert);
+        assert_eq!(
+            message,
+            "🚨 ALERTA ATIVO\nMedia | Infraestrutura\n\nO armazenamento de mídia não está montado.\n\nAção: Verificar o storage da Media.\nSeveridade: CRÍTICA"
+        );
+        assert!(!message.contains("/private/secret"));
+        assert!(!message.contains("must-not-appear"));
+        assert!(!message.contains("media/storage/mount"));
+    }
+
+    #[test]
+    fn renders_storage_recovery_as_normalized() {
+        let mut event = event();
+        event.event_type = "storage.mount.missing".into();
+        event.host_id = "media".into();
+        let alert = AlertRecord {
+            fingerprint: "media/storage/mount".into(),
+            status: AlertStatus::Resolved,
+            severity: Severity::Info,
+            event_type: event.event_type.clone(),
+            source: event.source.clone(),
+            host_id: event.host_id.clone(),
+            opened_at: event.occurred_at.clone(),
+            last_seen: event.occurred_at.clone(),
+            resolved_at: Some(event.occurred_at.clone()),
+            event_count: 2,
+            last_event_id: event.event_id.clone(),
+        };
+
+        let message = render_event(&event, &alert);
+        assert!(message.contains("ALERTA RESOLVIDO"));
+        assert!(message.contains("voltou a ficar disponível"));
     }
 
     #[test]

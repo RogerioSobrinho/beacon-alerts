@@ -113,6 +113,11 @@ the bot token from the configured token file, then drains due jobs. It uses
 HTTPS and a bounded request timeout. Tokens are never accepted as command-line
 values or included in job payloads.
 
+Telegram messages use a compact plain-text layout with status, host, a
+human-readable condition, a safe action, and severity. The renderer uses an
+allowlist of known event types and does not copy raw facts, fingerprints, event
+types, tokens, paths, or arbitrary payload data into the semi-public channel.
+
 ## Operational Logs
 
 Beacon writes operational logs to stdout/stderr for systemd-journald. The
