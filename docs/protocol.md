@@ -114,9 +114,11 @@ HTTPS and a bounded request timeout. Tokens are never accepted as command-line
 values or included in job payloads.
 
 Telegram messages use a compact plain-text layout with status, host, a
-human-readable condition, a safe action, and severity. The renderer uses an
-allowlist of known event types and does not copy raw facts, fingerprints, event
-types, tokens, paths, or arbitrary payload data into the semi-public channel.
+human-readable condition, a safe action, and severity. The layout and the
+event-specific text are external configuration in `telegram.json`, not hard-
+coded product language. The renderer uses an allowlist of placeholders and
+explicit field mappings; it does not copy raw facts, fingerprints, event types,
+tokens, paths, or arbitrary payload data into the semi-public channel.
 
 ## Operational Logs
 

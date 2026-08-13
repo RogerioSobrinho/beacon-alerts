@@ -20,8 +20,8 @@ use tokio::net::TcpListener;
 
 use crate::model::{AlertRecord, AlertStatus, Event, EventState};
 use crate::notification::{
-    render_event, retry_time, NotificationChannel, NotificationDispatcher, TelegramChannel,
-    TelegramConfig,
+    render_event, retry_time, MessageTemplates, NotificationChannel, NotificationDispatcher,
+    TelegramChannel, TelegramConfig,
 };
 use crate::policy::PolicyCatalog;
 
@@ -91,6 +91,7 @@ impl CredentialStore {
 pub struct ServerEventStore {
     database: PathBuf,
     policy: PolicyCatalog,
+    templates: MessageTemplates,
     _lock: std::fs::File,
 }
 
@@ -151,11 +152,24 @@ fn default_limit() -> usize {
 
 impl ServerEventStore {
     pub fn open(root: PathBuf) -> Result<Self> {
-        Self::open_with_policy(root, PolicyCatalog::default())
+        Self::open_with_policy_and_templates(
+            root,
+            PolicyCatalog::default(),
+            MessageTemplates::default(),
+        )
     }
 
     pub fn open_with_policy(root: PathBuf, policy: PolicyCatalog) -> Result<Self> {
+        Self::open_with_policy_and_templates(root, policy, MessageTemplates::default())
+    }
+
+    pub fn open_with_policy_and_templates(
+        root: PathBuf,
+        policy: PolicyCatalog,
+        templates: MessageTemplates,
+    ) -> Result<Self> {
         policy.validate()?;
+        templates.validate()?;
         fs::create_dir_all(&root)
             .with_context(|| format!("create server data directory {}", root.display()))?;
         let lock_path = root.join(".lock");
@@ -182,6 +196,7 @@ impl ServerEventStore {
         Ok(Self {
             database,
             policy,
+            templates,
             _lock: lock,
         })
     }
@@ -305,6 +320,7 @@ impl ServerEventStore {
                 event,
                 &alert,
                 &self.policy.channels_for(event),
+                &self.templates,
             )?;
         }
         transaction.commit()?;
@@ -492,8 +508,9 @@ fn enqueue_notifications(
     event: &Event,
     alert: &AlertRecord,
     channels: &[String],
+    templates: &MessageTemplates,
 ) -> Result<()> {
-    let payload = render_event(event, alert);
+    let payload = render_event(event, alert, templates);
     let next_attempt_at = Utc::now().to_rfc3339();
     for channel in channels {
         transaction.execute(
@@ -684,11 +701,18 @@ pub async fn serve(args: ServerConfig) -> Result<()> {
         .bind
         .parse()
         .with_context(|| format!("invalid server bind address {}", args.bind))?;
-    let state = server_state(args.data, args.credentials_dir, args.policy)?;
-    if let Some(config_path) = args.telegram_config {
-        let channel: Arc<dyn NotificationChannel> = Arc::new(TelegramChannel::from_config(
-            TelegramConfig::load(&config_path)?,
-        )?);
+    let telegram = args
+        .telegram_config
+        .as_deref()
+        .map(TelegramConfig::load)
+        .transpose()?;
+    let templates = telegram
+        .as_ref()
+        .map(|config| config.templates.clone())
+        .unwrap_or_default();
+    let state = server_state(args.data, args.credentials_dir, args.policy, templates)?;
+    if let Some(config) = telegram {
+        let channel: Arc<dyn NotificationChannel> = Arc::new(TelegramChannel::from_config(config)?);
         let dispatcher = Arc::new(NotificationDispatcher::new(
             vec![channel],
             args.notify_max_attempts,
@@ -740,7 +764,12 @@ pub fn router_with_credentials(
     credentials_dir: PathBuf,
     policy: PolicyCatalog,
 ) -> Result<Router> {
-    Ok(build_router(server_state(data, credentials_dir, policy)?))
+    Ok(build_router(server_state(
+        data,
+        credentials_dir,
+        policy,
+        MessageTemplates::default(),
+    )?))
 }
 
 pub fn create_enrollment(
@@ -787,10 +816,13 @@ fn server_state(
     data: PathBuf,
     credentials_dir: PathBuf,
     policy: PolicyCatalog,
+    templates: MessageTemplates,
 ) -> Result<ServerState> {
     Ok(ServerState {
         credentials: Arc::new(CredentialStore::new(credentials_dir)?),
-        events: Arc::new(ServerEventStore::open_with_policy(data, policy)?),
+        events: Arc::new(ServerEventStore::open_with_policy_and_templates(
+            data, policy, templates,
+        )?),
     })
 }
 

@@ -143,7 +143,9 @@ validated.
 
 Create `/etc/beacon/telegram.json` from `docs/telegram.example.json` and set a
 chat ID. Its `token_file` path is interpreted inside the container and must be
-`/etc/beacon/telegram.token` for the supplied Compose file.
+`/etc/beacon/telegram.token` for the supplied Compose file. This file also
+contains the external, per-deployment message templates; see
+[`telegram-templates.md`](telegram-templates.md).
 
 Put the bot token only in `/etc/beacon/telegram.token`. Generate or provision
 it through your secret manager without printing it in a terminal transcript.

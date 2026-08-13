@@ -22,6 +22,12 @@ administration plane.
 - Transport credentials are read from files rather than command-line arguments.
 - Telegram tokens are read from a separate restricted file; Telegram config
   contains only the token-file path and chat identifier.
+- Telegram templates are external configuration; only allowlisted placeholders
+  and explicitly mapped scalar facts can reach the semi-public channel.
+- Telegram is treated as semi-public: templates must not include secrets,
+  personal data, internal paths, raw logs, credentials, or unreviewed event
+  facts. A field mapping is an explicit operator decision, not permission to
+  forward arbitrary payloads.
 - Telegram delivery uses HTTPS, a bounded timeout, and never logs the bot token.
 - The bootstrap uses per-agent bearer files and requires HTTPS by default.
 - Production transport uses server certificate/key files and CA validation by

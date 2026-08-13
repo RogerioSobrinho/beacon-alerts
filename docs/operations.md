@@ -14,6 +14,8 @@ operational constraints.
 - Validate the policy file before starting the server; keep it free of secrets.
 - Validate Telegram config before enabling the in-process notification worker;
   keep the token file separately protected and root-owned.
+- Keep Telegram message templates in the external `telegram.json` configuration;
+  do not hard-code deployment language or operational text in the binary.
 - Store each agent transport token as a separate root-owned file in the server
   credentials directory with restrictive permissions; do not pass tokens on the
   command line.

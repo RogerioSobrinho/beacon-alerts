@@ -1,5 +1,35 @@
 {
   "token_file": "/etc/beacon/telegram.token",
   "chat_id": "REPLACE_WITH_CHAT_ID",
-  "timeout_seconds": 10
+  "timeout_seconds": 10,
+  "templates": {
+    "formats": {
+      "firing": "{icon} {status}\n{host} | {title}\n\n{detail}\n\n{fields}\n\nAction: {action}\nSeverity: {severity}",
+      "resolved": "{icon} {status}\n{host} | {title}\n\n{detail}\n\n{fields}\n\nAction: {action}",
+      "info": "{icon} {status}\n{host} | {title}\n\n{detail}\n\n{fields}"
+    },
+    "events": {
+      "backup.restic.stale": {
+        "title": "Restic backup age",
+        "firing": {"detail": "The backup is older than the operational threshold.", "action": "Check the source backup job and destination mount."},
+        "resolved": {"detail": "The backup age is within the operational threshold.", "action": "No immediate action required."},
+        "info": {},
+        "fields": [{"label": "Age", "fact": "age_hours"}, {"label": "Repository", "fact": "repository"}]
+      },
+      "storage.mount.missing": {
+        "title": "Storage mount",
+        "firing": {"detail": "A required storage mount is unavailable.", "action": "Check the storage and follow the host runbook."},
+        "resolved": {"detail": "The required storage mount is available again.", "action": "Confirm the dependent workflow is healthy."},
+        "info": {},
+        "fields": []
+      },
+      "network.tailscale.unavailable": {
+        "title": "Tailscale connectivity",
+        "firing": {"detail": "Tailscale is not connected on the monitored host.", "action": "Check Tailscale status on the host."},
+        "resolved": {"detail": "Tailscale connectivity has recovered.", "action": "Confirm remote access if needed."},
+        "info": {},
+        "fields": []
+      }
+    }
+  }
 }

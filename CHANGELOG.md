@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.0-rc7
+
+- Moved Telegram presentation into external `telegram.json` templates.
+- Added safe placeholders and explicit scalar fact mappings for dynamic fields.
+- Rejected unknown placeholders and bounded template/event field sizes.
+- Added English configuration examples and template documentation.
+
 ## 0.1.0-rc6
 
 - Added an allowlisted, human-readable Tailscale availability message without

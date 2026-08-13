@@ -129,6 +129,7 @@ intended only for local development.
 - [Architecture](docs/architecture.md)
 - [Quickstart](docs/quickstart.md)
 - [Event protocol](docs/protocol.md)
+- [Telegram templates](docs/telegram-templates.md)
 - [Security model](docs/security.md)
 - [Operations](docs/operations.md)
 - [Systemd and TLS](docs/systemd.md)

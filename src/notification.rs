@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,146 @@ pub struct TelegramConfig {
     pub chat_id: String,
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
+    #[serde(default)]
+    pub templates: MessageTemplates,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MessageTemplates {
+    #[serde(default)]
+    pub formats: MessageFormats,
+    #[serde(default)]
+    pub events: BTreeMap<String, EventMessages>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MessageFormats {
+    #[serde(default = "default_firing_format")]
+    pub firing: String,
+    #[serde(default = "default_resolved_format")]
+    pub resolved: String,
+    #[serde(default = "default_info_format")]
+    pub info: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct EventMessages {
+    #[serde(default = "default_title")]
+    pub title: String,
+    #[serde(default)]
+    pub firing: StateMessage,
+    #[serde(default)]
+    pub resolved: StateMessage,
+    #[serde(default)]
+    pub info: StateMessage,
+    #[serde(default)]
+    pub fields: Vec<FieldTemplate>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct FieldTemplate {
+    pub label: String,
+    pub fact: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct StateMessage {
+    #[serde(default)]
+    pub detail: String,
+    #[serde(default)]
+    pub action: String,
+}
+
+fn default_firing_format() -> String {
+    "{icon} {status}\n{host} | {title}\n\n{detail}\n\nAction: {action}\nSeverity: {severity}".into()
+}
+
+fn default_resolved_format() -> String {
+    "{icon} {status}\n{host} | {title}\n\n{detail}\n\nAction: {action}".into()
+}
+
+fn default_info_format() -> String {
+    "{icon} {status}\n{host} | {title}\n\n{detail}".into()
+}
+
+fn default_title() -> String {
+    "Monitored condition".into()
+}
+
+impl Default for MessageFormats {
+    fn default() -> Self {
+        Self {
+            firing: default_firing_format(),
+            resolved: default_resolved_format(),
+            info: default_info_format(),
+        }
+    }
+}
+
+impl MessageTemplates {
+    pub fn validate(&self) -> Result<()> {
+        for (name, template) in [
+            ("firing", &self.formats.firing),
+            ("resolved", &self.formats.resolved),
+            ("info", &self.formats.info),
+        ] {
+            validate_template(name, template)?;
+        }
+        if self.events.len() > 256 {
+            bail!("Telegram templates cannot contain more than 256 event types");
+        }
+        for (event_type, message) in &self.events {
+            if event_type.trim().is_empty() || event_type.len() > 128 {
+                bail!("Telegram template event type is invalid");
+            }
+            if message.title.trim().is_empty() || message.title.len() > 256 {
+                bail!("Telegram template title for '{event_type}' is invalid");
+            }
+            for state in [&message.firing, &message.resolved, &message.info] {
+                if state.detail.len() > 1024 || state.action.len() > 512 {
+                    bail!("Telegram template content for '{event_type}' is too long");
+                }
+            }
+            if message.fields.len() > 16 {
+                bail!("Telegram template fields for '{event_type}' cannot exceed 16 items");
+            }
+            for field in &message.fields {
+                if field.label.trim().is_empty()
+                    || field.label.len() > 128
+                    || field.fact.trim().is_empty()
+                    || field.fact.len() > 64
+                {
+                    bail!("Telegram template field for '{event_type}' is invalid");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_template(name: &str, template: &str) -> Result<()> {
+    if template.is_empty() || template.len() > 4096 {
+        bail!("Telegram template '{name}' must be between 1 and 4096 bytes");
+    }
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        let after_start = &rest[start + 1..];
+        let end = after_start
+            .find('}')
+            .context("Telegram template contains an unclosed placeholder")?;
+        let placeholder = &after_start[..end];
+        if !matches!(
+            placeholder,
+            "icon" | "status" | "host" | "title" | "detail" | "action" | "severity" | "fields"
+        ) {
+            bail!("Telegram template '{name}' uses unsupported placeholder '{placeholder}'");
+        }
+        rest = &after_start[end + 1..];
+    }
+    if rest.contains('}') {
+        bail!("Telegram template '{name}' contains an unmatched closing brace");
+    }
+    Ok(())
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -60,6 +201,7 @@ impl TelegramConfig {
         if self.timeout_seconds == 0 || self.timeout_seconds > 120 {
             bail!("Telegram timeout_seconds must be between 1 and 120");
         }
+        self.templates.validate()?;
         Ok(())
     }
 }
@@ -201,73 +343,89 @@ impl NotificationDispatcher {
     }
 }
 
-pub fn render_event(event: &Event, alert: &AlertRecord) -> String {
-    let host = human_host(&event.host_id);
-    let severity = human_severity(&alert.severity);
-    let (icon, status, detail, action) = match (
-        event.event_type.as_str(),
-        &alert.status,
-        event.host_id.as_str(),
-    ) {
-        ("storage.mount.missing", AlertStatus::Firing, "media") => (
+pub fn render_event(event: &Event, alert: &AlertRecord, templates: &MessageTemplates) -> String {
+    let (icon, status, fallback_detail, fallback_action, format) = match alert.status {
+        AlertStatus::Firing => (
             "🚨",
-            "ALERTA ATIVO",
-            "O armazenamento de mídia não está montado.",
-            "Verificar o storage da Media.",
+            "ALERT FIRING",
+            "A monitored condition requires attention.",
+            "Check the corresponding runbook.",
+            &templates.formats.firing,
         ),
-        ("storage.mount.missing", AlertStatus::Resolved, "media") => (
+        AlertStatus::Resolved => (
             "✅",
-            "ALERTA RESOLVIDO",
-            "O armazenamento de mídia voltou a ficar disponível.",
-            "Nenhuma ação imediata; confirmar a operação normal.",
+            "ALERT RESOLVED",
+            "The monitored condition has recovered.",
+            "No immediate action required.",
+            &templates.formats.resolved,
         ),
-        ("network.tailscale.unavailable", AlertStatus::Firing, "media") => (
-            "⚠️",
-            "ALERTA ATIVO",
-            "O Tailscale não está conectado na Media.",
-            "Verificar o estado do Tailscale na Media.",
-        ),
-        ("network.tailscale.unavailable", AlertStatus::Resolved, "media") => (
-            "✅",
-            "ALERTA RESOLVIDO",
-            "O Tailscale voltou a ficar conectado na Media.",
-            "Nenhuma ação imediata; confirmar o acesso remoto.",
-        ),
-        ("backup.restic.stale", AlertStatus::Firing, _) => (
-            "🚨",
-            "ALERTA ATIVO",
-            "A idade do backup ultrapassou o limite operacional.",
-            "Verificar o último backup e o mount de destino.",
-        ),
-        ("backup.restic.stale", AlertStatus::Resolved, _) => (
-            "✅",
-            "ALERTA RESOLVIDO",
-            "A idade do backup voltou ao limite operacional.",
-            "Nenhuma ação imediata; confirmar o próximo ciclo.",
-        ),
-        (_, AlertStatus::Firing, _) => (
-            "⚠️",
-            "ALERTA ATIVO",
-            "Uma condição monitorada requer atenção.",
-            "Verificar o monitor correspondente.",
-        ),
-        (_, AlertStatus::Resolved, _) => (
-            "✅",
-            "ALERTA RESOLVIDO",
-            "A condição monitorada foi normalizada.",
-            "Nenhuma ação imediata.",
-        ),
-        (_, AlertStatus::Info, _) => (
+        AlertStatus::Info => (
             "ℹ️",
-            "INFORMAÇÃO",
-            "Um evento operacional foi registrado.",
-            "Nenhuma ação imediata.",
+            "INFORMATION",
+            "An operational event was recorded.",
+            "No immediate action required.",
+            &templates.formats.info,
         ),
     };
+    let event_message = templates.events.get(&event.event_type);
+    let state_message = event_message.map(|message| match alert.status {
+        AlertStatus::Firing => &message.firing,
+        AlertStatus::Resolved => &message.resolved,
+        AlertStatus::Info => &message.info,
+    });
+    let values = BTreeMap::from([
+        ("icon", icon.to_owned()),
+        ("status", status.to_owned()),
+        ("host", human_host(&event.host_id).to_owned()),
+        (
+            "title",
+            event_message
+                .map(|message| message.title.clone())
+                .unwrap_or_else(default_title),
+        ),
+        (
+            "detail",
+            state_message
+                .filter(|message| !message.detail.is_empty())
+                .map(|message| message.detail.clone())
+                .unwrap_or_else(|| fallback_detail.to_owned()),
+        ),
+        (
+            "action",
+            state_message
+                .filter(|message| !message.action.is_empty())
+                .map(|message| message.action.clone())
+                .unwrap_or_else(|| fallback_action.to_owned()),
+        ),
+        ("severity", human_severity(&alert.severity).to_owned()),
+        (
+            "fields",
+            event_message
+                .map(|message| render_fields(event, &message.fields))
+                .unwrap_or_default(),
+        ),
+    ]);
+    render_template(format, &values)
+}
 
-    format!(
-        "{icon} {status}\n{host} | Infraestrutura\n\n{detail}\n\nAção: {action}\nSeveridade: {severity}"
-    )
+fn render_template(template: &str, values: &BTreeMap<&str, String>) -> String {
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 1..];
+        let end = after_start.find('}').unwrap_or(after_start.len());
+        if let Some(value) = values.get(&after_start[..end]) {
+            output.push_str(value);
+        }
+        rest = if end < after_start.len() {
+            &after_start[end + 1..]
+        } else {
+            ""
+        };
+    }
+    output.push_str(rest);
+    output
 }
 
 fn human_host(host: &str) -> &'static str {
@@ -277,16 +435,38 @@ fn human_host(host: &str) -> &'static str {
         "backup" => "Backup",
         "pve" => "PVE",
         "private-cloud" => "Private Cloud",
-        _ => "Infraestrutura",
+        _ => "Infrastructure",
     }
 }
 
 fn human_severity(severity: &Severity) -> &'static str {
     match severity {
-        Severity::Critical => "CRÍTICA",
-        Severity::Warning => "ATENÇÃO",
-        Severity::Info => "INFORMAÇÃO",
+        Severity::Critical => "critical",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
     }
+}
+
+fn render_fields(event: &Event, fields: &[FieldTemplate]) -> String {
+    fields
+        .iter()
+        .filter_map(|field| {
+            let value = event.facts.get(&field.fact)?;
+            let value = match value {
+                serde_json::Value::String(value) => value.clone(),
+                serde_json::Value::Number(value) => value.to_string(),
+                serde_json::Value::Bool(value) => value.to_string(),
+                _ => return None,
+            };
+            let value = value
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(256)
+                .collect::<String>();
+            Some(format!("{}: {}", field.label, value))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn retry_time(now: DateTime<Utc>, attempts: u32, base_seconds: u64) -> String {
@@ -419,10 +599,10 @@ mod tests {
             last_event_id: event.event_id.clone(),
         };
 
-        let message = render_event(&event, &alert);
+        let message = render_event(&event, &alert, &MessageTemplates::default());
         assert_eq!(
             message,
-            "🚨 ALERTA ATIVO\nMedia | Infraestrutura\n\nO armazenamento de mídia não está montado.\n\nAção: Verificar o storage da Media.\nSeveridade: CRÍTICA"
+            "🚨 ALERT FIRING\nMedia | Monitored condition\n\nA monitored condition requires attention.\n\nAction: Check the corresponding runbook.\nSeverity: critical"
         );
         assert!(!message.contains("/private/secret"));
         assert!(!message.contains("must-not-appear"));
@@ -448,9 +628,9 @@ mod tests {
             last_event_id: event.event_id.clone(),
         };
 
-        let message = render_event(&event, &alert);
-        assert!(message.contains("ALERTA RESOLVIDO"));
-        assert!(message.contains("voltou a ficar disponível"));
+        let message = render_event(&event, &alert, &MessageTemplates::default());
+        assert!(message.contains("ALERT RESOLVED"));
+        assert!(message.contains("The monitored condition has recovered."));
     }
 
     #[test]
@@ -476,10 +656,67 @@ mod tests {
             last_event_id: event.event_id.clone(),
         };
 
-        let message = render_event(&event, &alert);
-        assert!(message.contains("O Tailscale não está conectado na Media."));
+        let message = render_event(&event, &alert, &MessageTemplates::default());
+        assert!(message.contains("A monitored condition requires attention."));
         assert!(!message.contains("internal-secret-must-not-appear"));
         assert!(!message.contains("media/network/tailscale"));
+    }
+
+    #[test]
+    fn renders_user_defined_template_and_explicit_fields_only() {
+        let templates: MessageTemplates = serde_json::from_str(
+            r#"{
+                "formats": {
+                    "firing": "[CUSTOM] {title} on {host}\\n{detail}\\n{fields}",
+                    "resolved": "[RECOVERED] {title}\\n{detail}",
+                    "info": "[INFO] {title}"
+                },
+                "events": {
+                    "backup.restic.stale": {
+                        "title": "NAS backup",
+                        "firing": {"detail": "Backup is late", "action": "Check NAS"},
+                        "resolved": {"detail": "Backup is current", "action": "No action"},
+                        "info": {},
+                        "fields": [{"label": "Age", "fact": "age_hours"}]
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        templates.validate().unwrap();
+
+        let mut event = event();
+        event.facts = BTreeMap::from([
+            ("age_hours".into(), serde_json::json!(42)),
+            ("secret".into(), serde_json::json!("do-not-render")),
+        ]);
+        let alert = AlertRecord {
+            fingerprint: event.fingerprint.clone(),
+            status: AlertStatus::Firing,
+            severity: Severity::Critical,
+            event_type: event.event_type.clone(),
+            source: event.source.clone(),
+            host_id: event.host_id.clone(),
+            opened_at: event.occurred_at.clone(),
+            last_seen: event.occurred_at.clone(),
+            resolved_at: None,
+            event_count: 1,
+            last_event_id: event.event_id.clone(),
+        };
+
+        let message = render_event(&event, &alert, &templates);
+        assert!(message.contains("[CUSTOM] NAS backup on Backup"));
+        assert!(message.contains("Age: 42"));
+        assert!(!message.contains("do-not-render"));
+        assert!(!message.contains(&event.fingerprint));
+    }
+
+    #[test]
+    fn rejects_unsafe_template_placeholder() {
+        let templates: MessageTemplates =
+            serde_json::from_str(r#"{"formats":{"firing":"{facts}","resolved":"ok","info":"ok"}}"#)
+                .unwrap();
+        assert!(templates.validate().is_err());
     }
 
     #[test]
@@ -488,6 +725,7 @@ mod tests {
             token_file: "token".into(),
             chat_id: "chat".into(),
             timeout_seconds: 0,
+            templates: MessageTemplates::default(),
         };
         assert!(config.validate().is_err());
     }
