@@ -221,6 +221,18 @@ pub fn render_event(event: &Event, alert: &AlertRecord) -> String {
             "O armazenamento de mídia voltou a ficar disponível.",
             "Nenhuma ação imediata; confirmar a operação normal.",
         ),
+        ("network.tailscale.unavailable", AlertStatus::Firing, "media") => (
+            "⚠️",
+            "ALERTA ATIVO",
+            "O Tailscale não está conectado na Media.",
+            "Verificar o estado do Tailscale na Media.",
+        ),
+        ("network.tailscale.unavailable", AlertStatus::Resolved, "media") => (
+            "✅",
+            "ALERTA RESOLVIDO",
+            "O Tailscale voltou a ficar conectado na Media.",
+            "Nenhuma ação imediata; confirmar o acesso remoto.",
+        ),
         ("backup.restic.stale", AlertStatus::Firing, _) => (
             "🚨",
             "ALERTA ATIVO",
@@ -439,6 +451,35 @@ mod tests {
         let message = render_event(&event, &alert);
         assert!(message.contains("ALERTA RESOLVIDO"));
         assert!(message.contains("voltou a ficar disponível"));
+    }
+
+    #[test]
+    fn renders_tailscale_alert_without_event_facts() {
+        let mut event = event();
+        event.event_type = "network.tailscale.unavailable".into();
+        event.host_id = "media".into();
+        event.facts = BTreeMap::from([(
+            "service".into(),
+            serde_json::json!("internal-secret-must-not-appear"),
+        )]);
+        let alert = AlertRecord {
+            fingerprint: "media/network/tailscale".into(),
+            status: AlertStatus::Firing,
+            severity: Severity::Warning,
+            event_type: event.event_type.clone(),
+            source: event.source.clone(),
+            host_id: event.host_id.clone(),
+            opened_at: event.occurred_at.clone(),
+            last_seen: event.occurred_at.clone(),
+            resolved_at: None,
+            event_count: 1,
+            last_event_id: event.event_id.clone(),
+        };
+
+        let message = render_event(&event, &alert);
+        assert!(message.contains("O Tailscale não está conectado na Media."));
+        assert!(!message.contains("internal-secret-must-not-appear"));
+        assert!(!message.contains("media/network/tailscale"));
     }
 
     #[test]

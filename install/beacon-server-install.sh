@@ -5,7 +5,7 @@ ROOT=${ROOT:-/opt/beacon}
 DATA_DIR=${DATA_DIR:-/var/lib/beacon/events}
 CONFIG_DIR=${CONFIG_DIR:-/etc/beacon}
 IMAGE_REF=${IMAGE_REF:?set IMAGE_REF to an immutable Beacon image digest}
-RELEASE_TAG=${RELEASE_TAG:-v0.1.0-rc5}
+RELEASE_TAG=${RELEASE_TAG:-v0.1.0-rc6}
 COMPOSE_URL=${COMPOSE_URL:-https://raw.githubusercontent.com/RogerioSobrinho/beacon-alerts/${RELEASE_TAG}/compose.yaml}
 
 if [[ ${EUID} -ne 0 ]]; then

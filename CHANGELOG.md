@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.0-rc6
+
+- Added an allowlisted, human-readable Tailscale availability message without
+  exposing event facts or internal identifiers.
+
 ## 0.1.0-rc5
 
 - Improved Telegram alerts with a compact human-readable layout and allowlisted
